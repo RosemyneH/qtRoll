@@ -2,7 +2,7 @@
 ## Title: |cff00bfffqt|r|cffff7d0aRoll|r
 ## Notes: Auto roll Need/Greed/Pass based on item type.
 ## Author: Qt
-## Version: 1.0
+## Version: 2
 ## RequiredDeps: SynastriaCoreLib
 ## SavedVariables: qtRollDB
 
