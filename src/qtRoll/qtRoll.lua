@@ -1,1189 +1,821 @@
---[[
-AttuneProgress - Enhanced Item Attunement Progress Display
-Features:
-- Visual progress bars for attunement progress (vertical bars)
-- Red bars for items not attunable by character (configurable)
-- Bounty icons for bountied items
-- Account-attunable indicators
---]]
+-- qtRoll - Standalone version using custom game API
+if qtRollDB == nil then
+    qtRollDB = {
+        enabled = 1,
+        debugMode = 0,
+        needOnWeakerForge = 1,
+        needOnToken = 1,
+        autoNeed = 1,
+        autoGreed = 1,
+        greedOnLockbox = 1,
+        greedOnResource = 1,
+        greedOnRecipe = 1,
+        autoPass = 1,
+        needOnNewAffixOnly = 0,
+        autoNeedCustomList = {},
+        defaultNeedRoll = {
+            43102,
+            47242
+        }
+    }
+else
+    if type(qtRollDB.autoNeedCustomList) ~= "table" then
+        qtRollDB.autoNeedCustomList = {}
+    end
 
-local WHITE_TEX = "Interface\\Buttons\\WHITE8X8"
-
-local CONST_ADDON_NAME = 'AttuneProgress'
-AttuneProgress = {}
-
--- Settings with defaults
-local DefaultSettings = {
-    showRedForNonAttunable = true,
-    showBountyIcons = true,
-    showAccountIcons = false,
-    showProgressText = true,
-    showAccountAttuneText = false,
-    faeMode = false,
-    scanEquipped = false,
-    excludeEquippedBars  = false,
+    if type(qtRollDB.defaultNeedRoll) ~= "table" or #qtRollDB.defaultNeedRoll == 0 then
+        qtRollDB.defaultNeedRoll = {
+            43102,
+            47242
+        }
+    end
     
-    -- Color settings (RGB values 0-1)
-    forgeColors = {
-        BASE        = { r = 1.0,   g = 1.0,   b = 0.0,   a = 1.0 }, -- yellow
-        TITANFORGED = { r = 0.468, g = 0.532, b = 1.000, a = 1.0 }, -- #B6C1FF
-        WARFORGED   = { r = 0.872, g = 0.206, b = 0.145, a = 1.0 }, -- #F07D6A
-        LIGHTFORGED = { r = 0.527, g = 0.527, b = 0.266, a = 1.0 }, -- #C0C08D
+    -- Add new settings if they don't exist
+    if qtRollDB.needOnNewAffixOnly == nil then
+        qtRollDB.needOnNewAffixOnly = 0
+      end
+      if qtRollDB.greedOnRecipe == nil then
+        qtRollDB.greedOnRecipe = 1
+      end
+    
+      -- back-fill *all* of our other defaults in one go
+      local __defaults = {
+        enabled           = 1,
+        debugMode         = 0,
+        needOnWeakerForge = 1,
+        needOnToken       = 1,
+        autoNeed          = 1,
+        autoGreed         = 1,
+        greedOnLockbox    = 1,
+        greedOnResource   = 1,
+        autoPass          = 1,
       }
+      for k, v in pairs(__defaults) do
+        if qtRollDB[k] == nil then
+          qtRollDB[k] = v
+        end
+      end
+    end
 
-    nonAttunableBarColor = {r = 1.0, g = 0.0, b = 0.0}, -- Red
-    textColor = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 },
+local FORGE_LEVEL_MAP = {
+    BASE = 0,
+    TITANFORGED = 1,
+    WARFORGED = 2,
+    LIGHTFORGED = 3
 }
-local FORGE_LEVEL_MAP   = { BASE = 0, TITANFORGED = 1, WARFORGED = 2, LIGHTFORGED = 3 }
-local ForgeLevelNames   = { [0] = 'BASE', [1] = 'TITANFORGED', [2] = 'WARFORGED', [3] = 'LIGHTFORGED' }
-local function GetForgeLevelFromLink(itemLink)  -- ★ NEW
-    if not itemLink or not _G.GetItemLinkTitanforge then return FORGE_LEVEL_MAP.BASE end
-    local val = GetItemLinkTitanforge(itemLink)
-    for _, known in pairs(FORGE_LEVEL_MAP) do
-        if val == known then return val end
+
+local function qtRollDebug(msg)
+    if qtRollDB and qtRollDB.enabled == 1 and qtRollDB.debugMode and qtRollDB.debugMode > 0 then
+        DEFAULT_CHAT_FRAME:AddMessage(
+            "|cff00bfffqt|r|cffff7d0aRoll|r Debug: " .. msg
+        )
+    end
+end
+
+-- Standalone functions to replace SynastriaCoreLib dependency
+local function IsAttunable(itemLink)
+    if not itemLink then return false end
+    
+    local itemId = tonumber(itemLink:match("item:(%d+)"))
+    if not itemId then return false end
+    
+    -- Use CanAttuneItemHelper if available
+    if CanAttuneItemHelper then
+        return CanAttuneItemHelper(itemId) > 0
+    end
+    
+    -- Fallback: check item tags for attunable flag
+    if GetItemTagsCustom then
+        local itemTags = GetItemTagsCustom(itemId)
+        if itemTags then
+            -- Check if item has attunable tag (bit 64 based on documentation)
+            return bit.band(itemTags, 64) ~= 0
+        end
+    end
+    
+    return false
+end
+
+local function HasAttuneProgress(itemLink)
+    if not itemLink then return false end
+    
+    if GetItemLinkAttuneProgress then
+        local progress = GetItemLinkAttuneProgress(itemLink)
+        return progress and progress > 0
+    end
+    
+    return false
+end
+
+local function IsMythicItem(itemLink)
+    if not itemLink then return false end
+    
+    local itemId = tonumber(itemLink:match("item:(%d+)"))
+    if not itemId then return false end
+    
+    -- Use GetItemTagsCustom for better mythic detection
+    if GetItemTagsCustom then
+        local itemTags = GetItemTagsCustom(itemId)
+        if itemTags then
+            -- Check for mythic bit (0x80 = 128)
+            return bit.band(itemTags, 128) ~= 0
+        end
+    end
+    
+    -- Fallback to tooltip scanning
+    local tt = CreateFrame("GameTooltip", "qtRollMythicItemScannerTooltip", nil, "GameTooltipTemplate")
+    tt:SetOwner(UIParent, "ANCHOR_NONE")
+    tt:SetHyperlink(itemLink)
+    for i = 1, tt:NumLines() do
+        local line = _G["qtRollMythicItemScannerTooltipTextLeft" .. i]:GetText()
+        if line and string.find(line, "Mythic") then
+            tt:Hide()
+            return true
+        end
+    end
+    tt:Hide()
+    return false
+end
+
+local function GetForgeLevelFromLink(itemLink)
+    if not itemLink then return FORGE_LEVEL_MAP.BASE end
+    
+    if GetItemLinkTitanforge then
+        local forgeValue = GetItemLinkTitanforge(itemLink)
+        -- Validate the returned value against known FORGE_LEVEL_MAP values
+        for _, knownValue in pairs(FORGE_LEVEL_MAP) do
+            if forgeValue == knownValue then
+                return forgeValue
+            end
+        end
+        qtRollDebug("GetForgeLevelFromLink: GetItemLinkTitanforge returned unexpected value: " .. tostring(forgeValue))
+    else
+        qtRollDebug("GetForgeLevelFromLink: GetItemLinkTitanforge API not available.")
     end
     return FORGE_LEVEL_MAP.BASE
 end
 
-local function CopyTable(src)
-    local dst = {}
-    for k,v in pairs(src) do dst[k] = v end
-    return dst
-end
-
-local Settings = {}
-local CheckboxTooltips = {
-    showRedForNonAttunable =
-        "Display red bars for items attunable by your account but not by this character.\nHeight indicates attunement progress.",
-    showBountyIcons =
-        "Show a gold icon on items that currently have a bounty.",
-    showAccountIcons =
-        "Show a blue square for items attunable by your account but not by this character.",
-    showProgressText =
-        "Display the numeric percentage on each progress bar.",
-    showAccountAttuneText =
-        "Display 'Acc' text on items attunable by account only.",
-    faeMode =
-        "Fae Mode: Always show progress bars, even when they are at 100%.",
-    scanEquipped =
-        "Scan your equipped gear and display attunement bars on the character frame slots.",
-    excludeEquippedBars =
-        "Suppress attunement progress **bars** on equipped-gear slots\n" ..
-        "(icons and text will still show on hover).",
-}
-
-local EquipmentSlotMapping = {
-    { id = INVSLOT_HEAD,           frame = "CharacterHeadSlot"       },
-    { id = INVSLOT_NECK,           frame = "CharacterNeckSlot"       },
-    { id = INVSLOT_SHOULDER,       frame = "CharacterShoulderSlot"   },
-    { id = INVSLOT_BACK,           frame = "CharacterBackSlot"       },
-    { id = INVSLOT_CHEST,          frame = "CharacterChestSlot"      },
-    { id = INVSLOT_WRIST,          frame = "CharacterWristSlot"      },
-    { id = INVSLOT_HAND,           frame = "CharacterHandsSlot"      },
-    { id = INVSLOT_WAIST,          frame = "CharacterWaistSlot"      },
-    { id = INVSLOT_LEGS,           frame = "CharacterLegsSlot"       },
-    { id = INVSLOT_FEET,           frame = "CharacterFeetSlot"       },
-    { id = INVSLOT_FINGER1,        frame = "CharacterFinger0Slot"    },
-    { id = INVSLOT_FINGER2,        frame = "CharacterFinger1Slot"    },
-    { id = INVSLOT_TRINKET1,       frame = "CharacterTrinket0Slot"   },
-    { id = INVSLOT_TRINKET2,       frame = "CharacterTrinket1Slot"   },
-    { id = INVSLOT_MAINHAND,       frame = "CharacterMainHandSlot"   },
-    { id = INVSLOT_SECONDARYHAND,  frame = "CharacterSecondaryHandSlot" },
-    { id = INVSLOT_RANGED,         frame = "CharacterRangedSlot"     },
-}
--- Function to save current settings
-local function SaveSettings()
-    if not AttuneProgressDB then AttuneProgressDB = {} end
-    for key, val in pairs(Settings) do
-        if type(val) == 'table' then
-            AttuneProgressDB[key] = CopyTable(val)
-        else
-            AttuneProgressDB[key] = val
-        end
-    end
-end
-
-local function CreateColorPicker(parent, label, tbl, key, anchor, yOffset)
-    -- the button/frame that holds the swatch
-    local sw = CreateFrame("Button", nil, parent)
-    sw:SetSize(20,20)
-    sw:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, yOffset)
-  
-    -- background border (optional)
-    sw.bg = sw:CreateTexture(nil,"BACKGROUND")
-    sw.bg:SetAllPoints(sw)
-    sw.bg:SetTexture(0,0,0,1)       -- solid black
-  
-    -- the actual color swatch
-    sw.tex = sw:CreateTexture(nil,"ARTWORK")
-    sw.tex:SetAllPoints(sw)
-    sw.tex:SetTexture(WHITE_TEX)    -- a 1×1 white pixel
-    sw.tex:SetVertexColor(
-      tbl[key].r,
-      tbl[key].g,
-      tbl[key].b,
-      tbl[key].a
-    )
-  
-    -- label
-    local txt = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    txt:SetPoint("LEFT", sw, "RIGHT", 5, 0)
-    txt:SetText(label)
-  
-    sw:SetScript("OnClick", function()
-      local function updateSwatch()
-        local r,g,b = ColorPickerFrame:GetColorRGB()
-        local a     = OpacitySliderFrame:GetValue()
-        tbl[key].r, tbl[key].g, tbl[key].b, tbl[key].a = r,g,b,a
-        sw.tex:SetVertexColor(r,g,b,a)
-        SaveSettings()
-        AttuneProgress:ForceUpdateAllDisplays()
-      end
-  
-      ColorPickerFrame.hasOpacity  = true
-      ColorPickerFrame.opacity     = tbl[key].a
-      ColorPickerFrame.func        = updateSwatch
-      ColorPickerFrame.opacityFunc = updateSwatch
-      ColorPickerFrame:SetColorRGB(tbl[key].r, tbl[key].g, tbl[key].b)
-      OpacitySliderFrame:SetValue(tbl[key].a)
-      ColorPickerFrame:Show()
-    end)
-  
-    return sw
-  end
-
--- lookup table for quick detection of CharacterFrame slots
-local EquipFrameLookup = {}
-for _, info in ipairs(EquipmentSlotMapping) do
-  EquipFrameLookup[info.frame] = true
-end
-
-local function LoadSettings()
-    if not AttuneProgressDB then AttuneProgressDB = {} end
-
-    -- 1) copy defaults
-    for key, val in pairs(DefaultSettings) do
-        if type(val) == 'table' then
-            Settings[key] = CopyTable(val)
-        else
-            Settings[key] = val
-        end
-    end
-
-    -- 2) override with saved
-    for key, val in pairs(AttuneProgressDB) do
-        if type(val) == 'table' and type(Settings[key]) == 'table' then
-            for sub, subval in pairs(val) do
-                Settings[key][sub] = subval
-            end
-        else
-            Settings[key] = val
-        end
-    end
-end
-
--- Configuration
-local CONFIG = {
-    PROGRESS_BAR = {
-        WIDTH = 6,
-        MIN_HEIGHT_PERCENT = 0.2, -- 20% of item height at 0% progress
-        MAX_HEIGHT_PERCENT = 1.0, -- 100% of item height at 100% progress
-        BACKGROUND_COLOR = {0, 0, 0, 1}, -- Black background
-        PROGRESS_COLOR = {1, 1, 0, 1}, -- Yellow for progress (will be updated from settings)
-        NON_ATTUNABLE_COLOR = {1, 0, 0, 1}, -- Red for non-attunable by character but attunable by account (will be updated from settings)
-    },
-    BOUNTY_ICON = {
-        SIZE = 16,
-        TEXTURE = 'Interface/MoneyFrame/UI-GoldIcon',
-    },
-	RESIST_ICON = {
-		SIZE = 16,
-		TEXTURE = 'Interface\\Addons\\AttuneProgress\\assets\\ScenarioIcon-Combat.blp', -- Using bounty icon as placeholder
-	},
-    ACCOUNT_ICON = {
-        SIZE = 8,
-        COLOR = {0.3, 0.7, 1.0, 0.8}, -- Light blue
-    },
-    TEXT = {
-        FONT = "NumberFontNormal",
-        COLOR = {1.0, 1.0, 0.0}, -- Yellow
-        ACCOUNT_COLOR = {0.3, 0.7, 1.0}, -- Light blue for "Acc" text
-    }
-}
-
--- Function to update CONFIG colors from Settings
-local function UpdateConfigColors()
-    CONFIG.PROGRESS_BAR.PROGRESS_COLOR = {
-        Settings.progressBarColor.r,
-        Settings.progressBarColor.g,
-        Settings.progressBarColor.b,
-        1
-    }
-    CONFIG.PROGRESS_BAR.NON_ATTUNABLE_COLOR = {
-        Settings.nonAttunableBarColor.r,
-        Settings.nonAttunableBarColor.g,
-        Settings.nonAttunableBarColor.b,
-        1
-    }
-end
-
--- Bagnon Guild Bank Slots
-local BagnonGuildBankSlots = {}
-for i = 1, 98 do
-    table.insert(BagnonGuildBankSlots, "BagnonGuildItemSlot" .. i)
-end
-
--- ElvUI Container Slots (assuming bags 0-4 and up to 36 slots each)
-local ElvUIContainerSlots = {}
-for bag = 0, 4 do
-    for slot = 1, 36 do
-        table.insert(ElvUIContainerSlots, "ElvUI_ContainerFrameBag" .. bag .. "Slot" .. slot)
-    end
-end
-
--- AdiBags Stack Buttons
-local AdiBagsSlots = {}
-for i = 1, 280 do
-    table.insert(AdiBagsSlots, "AdiBagsItemButton" .. i)
-end
-
--- Utility Functions
-local function GetItemIDFromLink(itemLink)
-    if not itemLink then return nil end
-    local itemIdStr = string.match(itemLink, "item:(%d+)")
-    if itemIdStr then return tonumber(itemIdStr) end
-    return nil
-end
-
--- Item Validation Functions
-local function IsItemValid(itemIdOrLink)
-    local itemId = itemIdOrLink
-    if type(itemIdOrLink) == "string" then
-        itemId = GetItemIDFromLink(itemIdOrLink)
-    end
+local function HasNewAffixes(itemLink)
+    if not itemLink then return false end
+    
+    local itemId = tonumber(itemLink:match("item:(%d+)"))
     if not itemId then return false end
-
-    -- _G.CanAttuneItemHelper check, returns 1 if attunable by player
-    if _G.CanAttuneItemHelper then
-        return CanAttuneItemHelper(itemId) >= 1
-    end
-    return false
+    
+    return HasAttunedAnyVariantOfItem(itemID)
 end
 
-local function GetAttuneProgress(itemLink)
-    if not itemLink then return 0 end
-
-    -- _G.GetItemLinkAttuneProgress check
-    if _G.GetItemLinkAttuneProgress then
-        local progress = GetItemLinkAttuneProgress(itemLink)
-        if type(progress) == "number" then
-            return progress
-        end
-    end
-    return 0
-end
-
-local function IsItemBountied(itemId)
-    -- Requires _G.GetCustomGameData, returns >0 if bountied
-    if not itemId or not _G.GetCustomGameData then return false end
-    local bountiedValue = GetCustomGameData(31, itemId)
-    return (bountiedValue or 0) > 0
-end
-
-local function IsAttunableByAccount(itemId)
-    if not itemId then return false end
-
-    -- Prefer IsAttunableBySomeone (more reliable for account-wide)
-    if _G.IsAttunableBySomeone then
-        local check = IsAttunableBySomeone(itemId)
-        return (check ~= nil and check ~= 0)
-    end
-
-    -- Fallback to GetItemTagsCustom for account-bound items (tag 64)
-    if _G.GetItemTagsCustom then
-        local itemTags = GetItemTagsCustom(itemId)
-        if itemTags then
-            return bit.band(itemTags, 96) == 64 -- Check if tag 64 (account-bound) is set
-        end
-    end
-
-    return false
-end
-
-local function IsItemResistArmor(itemLink, itemId)
-    if not itemLink or not itemId then return false end
-
-    -- Check if it's armor
-    if select(6, GetItemInfo(itemId)) ~= "Armor" then return false end
-
-    local itemName = itemLink:match("%[(.-)%]") -- Extract name from link
-    if not itemName then return false end
-
-    -- Common resist/protection indicators
-    local resistIndicators = {"Resistance", "Protection"}
-    -- Specific resistance types
-    local resistTypes = {"Arcane", "Fire", "Nature", "Frost", "Shadow"}
-
-    for _, resInd in ipairs(resistIndicators) do
-        if string.find(itemName, resInd) then
-            for _, resType in ipairs(resistTypes) do
-                if string.find(itemName, resType) then
-                    return true
+local function ItemExistsInBags(itemId, itemName)
+    for bag = 0, 4 do
+        for slot = 1, GetContainerNumSlots(bag) do
+            local link_in_bag = GetContainerItemLink(bag, slot)
+            if link_in_bag then
+                local itemId_in_bag = tonumber(link_in_bag:match("item:(%d+)"))
+                if itemId_in_bag then
+                    if itemId and itemId_in_bag == itemId then
+                        return true, link_in_bag
+                    elseif not itemId and itemName then
+                        local nameB_custom = GetItemInfoCustom and GetItemInfoCustom(itemId_in_bag) or GetItemInfo(itemId_in_bag)
+                        if nameB_custom and nameB_custom == itemName then
+                            return true, link_in_bag
+                        end
+                    end
                 end
             end
         end
     end
+    return false, nil
+end
+
+local function TooltipHasAlreadyKnown(itemLink)
+    local tooltip = CreateFrame("GameTooltip", "qtRollAlreadyKnownTooltip", nil, "GameTooltipTemplate")
+    tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+    tooltip:SetHyperlink(itemLink)
+    for i = 2, tooltip:NumLines() do
+        local text = _G["qtRollAlreadyKnownTooltipTextLeft" .. i]:GetText()
+        if text and (text:find(ITEM_SPELL_KNOWN) or text:find("Already known")) then
+            tooltip:Hide()
+            return true
+        end
+    end
+    tooltip:Hide()
     return false
 end
 
--- UI Creation and Update Functions
-local function SetFrameBounty(frame, itemLink)
-    local bountyFrameName = frame:GetName() .. '_Bounty'
-    local bountyFrame = _G[bountyFrameName]
-    local itemId = GetItemIDFromLink(itemLink)
-
-    if Settings.showBountyIcons and itemId and IsItemBountied(itemId) then
-        if not bountyFrame then
-            bountyFrame = CreateFrame('Frame', bountyFrameName, frame)
-            bountyFrame:SetWidth(CONFIG.BOUNTY_ICON.SIZE)
-            bountyFrame:SetHeight(CONFIG.BOUNTY_ICON.SIZE)
-            bountyFrame:SetFrameLevel(frame:GetFrameLevel() + 1)
-            bountyFrame.texture = bountyFrame:CreateTexture(
-                nil,
-                'OVERLAY'
-            ) -- Set strata to OVERLAY for texture
-            bountyFrame.texture:SetAllPoints()
-            bountyFrame.texture:SetTexture(CONFIG.BOUNTY_ICON.TEXTURE)
-        end
-        bountyFrame:SetParent(frame)
-        bountyFrame:SetPoint('TOPRIGHT', frame, 'TOPRIGHT', -2, -2)
-        bountyFrame:Show()
-    elseif bountyFrame then
-        bountyFrame:Hide()
+local function IsToken(itemLink)
+    local itemId = tonumber(itemLink:match("item:(%d+)"))
+    if not itemId then
+        qtRollDebug("IsToken: Could not parse itemID from link: " .. itemLink)
+        return false
     end
-end
-
-local function SetFrameAccountIcon(frame, itemId)
-    local iconFrameName = frame:GetName() .. '_Account'
-    local iconFrame = _G[iconFrameName]
-
-    -- Show icon if it's account-attunable and not attunable by *this* character
-    if Settings.showAccountIcons and itemId and IsAttunableByAccount(itemId) and not IsItemValid(itemId) then
-        if not iconFrame then
-            iconFrame = CreateFrame('Frame', iconFrameName, frame)
-            iconFrame:SetWidth(CONFIG.ACCOUNT_ICON.SIZE)
-            iconFrame:SetHeight(CONFIG.ACCOUNT_ICON.SIZE)
-            iconFrame:SetFrameLevel(frame:GetFrameLevel() + 1)
-            iconFrame.texture = iconFrame:CreateTexture(
-                nil,
-                'OVERLAY'
-            ) -- Set strata to OVERLAY for texture
-            iconFrame.texture:SetAllPoints()
-            iconFrame.texture:SetTexture(1, 1, 1, 1) -- White square
-            iconFrame.texture:SetVertexColor(
-                CONFIG.ACCOUNT_ICON.COLOR[1],
-                CONFIG.ACCOUNT_ICON.COLOR[2],
-                CONFIG.ACCOUNT_ICON.COLOR[3],
-                CONFIG.ACCOUNT_ICON.COLOR[4]
-            )
-        end
-        iconFrame:SetParent(frame)
-        iconFrame:SetPoint('TOPLEFT', frame, 'TOPLEFT', 2, -2)
-        iconFrame:Show()
-    elseif iconFrame then
-        iconFrame:Hide()
-    end
-end
-
-local function SetFrameResistIcon(frame, itemLink, itemId)
-    local resistFrameName = frame:GetName() .. '_Resist'
-    local resistFrame = _G[resistFrameName]
-
-    if itemLink and itemId and IsItemResistArmor(itemLink, itemId) then
-        if not resistFrame then
-            resistFrame = CreateFrame('Frame', resistFrameName, frame)
-            resistFrame:SetWidth(CONFIG.RESIST_ICON.SIZE)
-            resistFrame:SetHeight(CONFIG.RESIST_ICON.SIZE)
-            resistFrame:SetFrameLevel(frame:GetFrameLevel() + 1)
-            resistFrame.texture = resistFrame:CreateTexture(
-                nil,
-                'OVERLAY'
-            ) -- Set strata to OVERLAY for texture
-            resistFrame.texture:SetAllPoints()
-            resistFrame.texture:SetTexture(CONFIG.RESIST_ICON.TEXTURE)
-        end
-        resistFrame:SetParent(frame)
-        resistFrame:SetPoint('TOP', frame, 'TOP', 0, -2) -- Top center position
-        resistFrame:Show()
-    elseif resistFrame then
-        resistFrame:Hide()
-    end
-end
-
-local function SetFrameAttunement(frame, itemLink)
-    local itemId = GetItemIDFromLink(itemLink)
-    local progressName = frame:GetName() .. '_attuneBar'
-    local progFrame = _G[progressName]
-
-    if not frame.attuneText then
-        frame.attuneText = frame:CreateFontString(nil, 'OVERLAY', CONFIG.TEXT.FONT)
-        frame.attuneText:SetPoint('BOTTOM', frame, 'BOTTOM', 0, 1)
-    end
-
-    -- override text colour
-    frame.attuneText:SetTextColor(
-        Settings.textColor.r,
-        Settings.textColor.g,
-        Settings.textColor.b,
-        Settings.textColor.a
+    local _, _, _, _, _, itemType, itemSubType = GetItemInfoCustom and GetItemInfoCustom(itemId) or GetItemInfo(itemId)
+    return itemType == "Miscellaneous" and (
+        itemSubType == "Token" or itemSubType == "Reagent" or itemSubType == "Junk"
     )
-    frame.attuneText:SetText('')
-    if progFrame then progFrame:Hide() end
-    if not itemLink or not itemId then return end
+end
 
-    local charOK   = IsItemValid(itemId)
-    local accOK    = IsAttunableByAccount(itemId)
-    local progress = GetAttuneProgress(itemLink) or 0
-    local showBar, barCol = false, {}
+-- Reusable tooltip frame so we don't leak every call
+local TokenScanner = CreateFrame("GameTooltip",
+  "qtRollTokenTooltip", nil, "GameTooltipTemplate")
+TokenScanner:SetOwner(UIParent, "ANCHOR_NONE")
 
-    if charOK then
-        if Settings.faeMode or progress < 100 then
-            showBar = true
-            -- ★ pick forge-tier colour
-            local fl = GetForgeLevelFromLink(itemLink)
-            local key = ForgeLevelNames[fl] or 'BASE'
-            barCol = Settings.forgeColors[key]
-            if Settings.showProgressText then
-                frame.attuneText:SetText(string.format('%.0f%%', progress))
+local function TokenIsForPlayer(itemLink)
+    -- Gather every string UnitClass returns (localized, English, etc.),
+    -- even if one of them is nil in the middle.
+    local classNames = {}
+    local c1, c2, c3 = UnitClass("player")
+    for _, c in ipairs({ c1, c2, c3 }) do
+      if type(c) == "string" then
+        classNames[#classNames + 1] = c
+      end
+    end
+  
+    if #classNames == 0 then
+      qtRollDebug("TokenIsForPlayer: no class names from UnitClass")
+      return false
+    end
+  
+    -- Lower‐case them once so we can do a case‐insensitive search
+    for i = 1, #classNames do
+      classNames[i] = classNames[i]:lower()
+    end
+  
+    -- Populate tooltip
+    TokenScanner:ClearLines()
+    TokenScanner:SetHyperlink(itemLink)
+  
+    -- Scan each line for *any* of our class names
+    for i = 2, TokenScanner:NumLines() do
+      local line = _G["qtRollTokenTooltipTextLeft"..i]
+      if not line then
+        break
+      end
+      local text = line:GetText()
+      if text then
+        local tl = text:lower()
+        for _, cls in ipairs(classNames) do
+          -- plain find is fine now since we lowered both strings
+          if tl:find(cls, 1, true) then
+            TokenScanner:Hide()
+            return true
+          end
+        end
+      end
+    end
+  
+    TokenScanner:Hide()
+    return false
+  end
+
+local function GetBindingTypeFromTooltip(itemLink)
+    local tooltip = CreateFrame("GameTooltip", "qtRollScanTooltip", nil, "GameTooltipTemplate")
+    tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+    tooltip:SetHyperlink(itemLink)
+    local isBoE, isBoP = false, false
+    for i = 2, tooltip:NumLines() do
+        local text = _G["qtRollScanTooltipTextLeft" .. i]:GetText()
+        if text then
+            if text:find(ITEM_BIND_ON_EQUIP) or text:find("Binds when equipped") then
+                isBoE = true
+            elseif text:find(ITEM_BIND_ON_PICKUP) or text:find("Binds when picked up") then
+                isBoP = true
             end
         end
-    elseif Settings.showRedForNonAttunable and accOK then
-        if progress > 0 or Settings.showAccountAttuneText then
-            showBar = true
-            barCol  = Settings.nonAttunableBarColor
-            if Settings.showProgressText then
-                frame.attuneText:SetText(string.format('%.0f%%', progress))
-            elseif Settings.showAccountAttuneText then
-                frame.attuneText:SetText('Acc')
+    end
+    tooltip:Hide()
+    return isBoE, isBoP
+end
+
+local RESOURCE_TYPES = {
+    ["Trade Goods"] = true,
+    ["Consumable"] = true,
+    ["Gem"] = true
+}
+
+local function IsLockbox(itemLink)
+    local itemId = tonumber(itemLink:match("item:(%d+)"))
+    if not itemId then
+        qtRollDebug("IsLockbox: Could not parse itemID from link: " .. itemLink)
+        return false
+    end
+    local name = GetItemInfoCustom and GetItemInfoCustom(itemId) or GetItemInfo(itemId)
+    if name and name:lower():find("lockbox") then
+        return true
+    end
+    return false
+end
+
+local function ResolveItemToID(identifier)
+    local itemId
+    if type(identifier) == "number" then
+        local name_check = GetItemInfoCustom and GetItemInfoCustom(identifier) or GetItemInfo(identifier)
+        if name_check then
+            itemId = identifier
+        end
+    elseif type(identifier) == "string" then
+        local idFromLinkMatch = tonumber(identifier:match("item:(%d+)"))
+        if idFromLinkMatch then
+            local name_check = GetItemInfoCustom and GetItemInfoCustom(idFromLinkMatch) or GetItemInfo(idFromLinkMatch)
+            if name_check then
+                return idFromLinkMatch
             end
         end
-    end
 
-    -- ★ suppress on equipped if requested
-    local fn = frame:GetName()
-    if EquipFrameLookup[fn] and Settings.excludeEquippedBars then
-        showBar = false
-    end
-
-    if showBar then
-        if not progFrame then
-            progFrame = CreateFrame('Frame', progressName, frame)
-            progFrame:SetWidth(CONFIG.PROGRESS_BAR.WIDTH + 2)
-            progFrame:SetFrameLevel(frame:GetFrameLevel() + 1)
-            progFrame.texture = progFrame:CreateTexture(nil,'OVERLAY')
-            progFrame.texture:SetAllPoints()
-            progFrame.texture:SetTexture(
-                CONFIG.PROGRESS_BAR.BACKGROUND_COLOR[1],
-                CONFIG.PROGRESS_BAR.BACKGROUND_COLOR[2],
-                CONFIG.PROGRESS_BAR.BACKGROUND_COLOR[3],
-                CONFIG.PROGRESS_BAR.BACKGROUND_COLOR[4]
-            )
-            progFrame.child = CreateFrame('Frame', progressName..'Child', progFrame)
-            progFrame.child:SetWidth(CONFIG.PROGRESS_BAR.WIDTH)
-            progFrame.child:SetFrameLevel(progFrame:GetFrameLevel()+1)
-            progFrame.child:SetPoint('BOTTOMLEFT', progFrame, 'BOTTOMLEFT', -1, -1)
-            progFrame.child.texture = progFrame.child:CreateTexture(nil,'OVERLAY')
-            progFrame.child.texture:SetAllPoints()
+        local idFromDirectNumberParse = tonumber(identifier)
+        if idFromDirectNumberParse then
+             local name_check = GetItemInfoCustom and GetItemInfoCustom(idFromDirectNumberParse) or GetItemInfo(idFromDirectNumberParse)
+             if name_check then
+                 return idFromDirectNumberParse
+             end
         end
-
-        progFrame:SetParent(frame)
-        progFrame:SetPoint('BOTTOMLEFT', frame, 'BOTTOMLEFT', 2, 2)
-
-        local h = math.max(
-            frame:GetHeight() * CONFIG.PROGRESS_BAR.MIN_HEIGHT_PERCENT
-          + (progress / 100) 
-            * (frame:GetHeight() * (CONFIG.PROGRESS_BAR.MAX_HEIGHT_PERCENT - CONFIG.PROGRESS_BAR.MIN_HEIGHT_PERCENT)),
-            frame:GetHeight() * CONFIG.PROGRESS_BAR.MIN_HEIGHT_PERCENT
-        )
-        progFrame:SetHeight(h)
-        progFrame.child:SetHeight(h-2)
-
-        -- ★ apply the chosen colour
-        progFrame.child.texture:SetTexture(
-            barCol.r, barCol.g, barCol.b, barCol.a
-        )
-        progFrame:Show()
+        
+        -- Try to get item info by name
+        local _, itemLinkFromCustom = GetItemInfoCustom and GetItemInfoCustom(identifier) or GetItemInfo(identifier)
+        if itemLinkFromCustom then
+            itemId = tonumber(itemLinkFromCustom:match("item:(%d+)"))
+        end
     end
+    return itemId
 end
 
-local function UpdateItemDisplay(frame, itemLink)
-    -- If the addon is not logically "enabled" (though the option is removed, we keep the flag)
-    -- or if the frame is invalid, return.
-    if not frame or not frame:GetName() then return end
-
-    local itemId = itemLink and GetItemIDFromLink(itemLink) or nil
-
-    -- Clear previous states (bars, icons, text) to ensure clean updates
-    local progressFrame = _G[frame:GetName() .. '_attuneBar']
-    if progressFrame then progressFrame:Hide() end
-    local bountyFrame = _G[frame:GetName() .. '_Bounty']
-    if bountyFrame then bountyFrame:Hide() end
-    local iconFrame = _G[frame:GetName() .. '_Account']
-    if iconFrame then iconFrame:Hide() end
-    local resistFrameName = frame:GetName() .. '_Resist'
-	if _G[resistFrameName] then _G[resistFrameName]:Hide() end
-    if frame.attuneText then frame.attuneText:SetText("") end
-
-    -- If no item link, ensure everything is hidden and return
-    if not itemLink then return end
-
-    -- Update all displays based on current item link and ID
-    SetFrameBounty(frame, itemLink)
-    SetFrameAccountIcon(frame, itemId)
-    SetFrameResistIcon(frame, itemLink, itemId)  -- Add this line
-    SetFrameAttunement(frame, itemLink)
-end
-
--- Event Handlers
-local function ContainerFrame_OnUpdate(self, elapsed)
-    -- More aggressive update - every 0.05 seconds
-    self.attuneLastUpdate = self.attuneLastUpdate or 0
-    self.attuneLastUpdate = self.attuneLastUpdate + elapsed
-    if self.attuneLastUpdate < 0.05 then return end -- Update every 0.05 seconds
-    self.attuneLastUpdate = 0
-
-    local itemLink = GetContainerItemLink(self:GetParent():GetID(), self:GetID())
-    UpdateItemDisplay(self, itemLink)
-end
-
-local function ElvUIContainer_OnUpdate(self, elapsed)
-    -- More aggressive update - every 0.05 seconds
-    self.attuneLastUpdate = self.attuneLastUpdate or 0
-    self.attuneLastUpdate = self.attuneLastUpdate + elapsed
-    if self.attuneLastUpdate < 0.05 then return end -- Update every 0.05 seconds
-    self.attuneLastUpdate = 0
-
-    -- Extract bag and slot from frame name (e.g., "ElvUI_ContainerFrameBag0Slot5" -> bag=0, slot=5)
-    local frameName = self:GetName()
-    local bag, slot = string.match(frameName, "ElvUI_ContainerFrameBag(%d+)Slot(%d+)")
-    if not bag or not slot then return end
-    
-    bag = tonumber(bag)
-    slot = tonumber(slot)
-
-    local itemLink = GetContainerItemLink(bag, slot)
-    UpdateItemDisplay(self, itemLink)
-end
-
-local function AdiBags_OnUpdate(self, elapsed)
-    -- More aggressive update - every 0.05 seconds
-    self.attuneLastUpdate = self.attuneLastUpdate or 0
-    self.attuneLastUpdate = self.attuneLastUpdate + elapsed
-    if self.attuneLastUpdate < 0.05 then return end -- Update every 0.05 seconds
-    self.attuneLastUpdate = 0
-
-    -- AdiBags stores item information differently
-    local itemLink = nil
-    
-    -- Method 1: Check if the button has itemLink property
-    if self.itemLink then
-        itemLink = self.itemLink
+-- Main rolling logic
+local f = CreateFrame("Frame")
+f:RegisterEvent("START_LOOT_ROLL")
+f:SetScript("OnEvent", function(self, event, rollID)
+    if not qtRollDB or qtRollDB.enabled == 0 then
+      return
     end
-    
-    -- Method 2: Check if there's a GetLink method
-    if not itemLink and self.GetLink then
-        itemLink = self:GetLink()
+  
+    local itemLink = GetLootRollItemLink(rollID)
+    if not itemLink then
+      qtRollDebug("START_LOOT_ROLL: invalid itemLink for rollID " ..
+        tostring(rollID))
+      return
     end
-    
-    -- Method 3: Check for item property and build link
-    if not itemLink and self.item then
-        itemLink = self.item
+  
+    local currentItemId = tonumber(itemLink:match("item:(%d+)"))
+    if not currentItemId then
+      qtRollDebug("START_LOOT_ROLL: Could not parse itemID from link: " ..
+        itemLink)
+      return
     end
+  
+    local itemName, itemLink2, rarity, _, _, itemType, itemSubType =
+      (GetItemInfoCustom and GetItemInfoCustom(currentItemId)) or
+      GetItemInfo(currentItemId)
+    qtRollDB = qtRollDB or {}
+  
+    if rarity == 5 then
+      qtRollDebug("Item is Legendary: " .. (itemLink2 or itemLink) ..
+        ". Taking NO ACTION (manual roll).")
+      return
+    end
+  
+    local isBoE, isBoP = GetBindingTypeFromTooltip(itemLink)
+    local isTok = IsToken(itemLink)
+  
+    local function DoRoll(choice)
+      RollOnLoot(rollID, choice)
+      if choice > 0 and isBoP then
+        ConfirmLootRoll(rollID, choice)
+      end
+    end
+  
+    -- Custom need list
+    if currentItemId and qtRollDB.autoNeedCustomList then
+      for _, id in ipairs(qtRollDB.autoNeedCustomList) do
+        if id == currentItemId then
+          qtRollDebug("Need custom list item: " .. (itemLink2 or itemLink))
+          DoRoll(1)
+          return
+        end
+      end
+    end
+  
+    -- Default need list
+    if currentItemId and qtRollDB.defaultNeedRoll and
+      type(qtRollDB.defaultNeedRoll) == "table" then
+      for _, id in ipairs(qtRollDB.defaultNeedRoll) do
+        if id == currentItemId then
+          qtRollDebug("Need default list item: " ..
+            (itemLink2 or itemLink))
+          DoRoll(1)
+          return
+        end
+      end
+    end
+  
+    -- Already known
+    if TooltipHasAlreadyKnown(itemLink) then
+      qtRollDebug("Passing known (recipe or item): " ..
+        (itemLink2 or itemLink))
+      DoRoll(0)
+      return
+    end
+  
+    -- Recipe handling
+    if itemType == "Recipe" then
+      if itemSubType == "Class Books" then
+        qtRollDebug("Passing codex class book (recipe): " ..
+          (itemLink2 or itemLink))
+        DoRoll(0)
+        return
+      elseif qtRollDB.greedOnRecipe == 1 then
+        qtRollDebug("Greed unknown recipe: " .. (itemLink2 or itemLink))
+        DoRoll(2)
+        return
+      else
+        qtRollDebug("Recipe handling disabled for non-codex: " ..
+          (itemLink2 or itemLink))
+      end
+    end
+  
+    local isAtt = IsAttunable(itemLink)
+    local hasAttune = HasAttuneProgress(itemLink)
+    local isRes = RESOURCE_TYPES[itemType]
+    local isLock = IsLockbox(itemLink)
+    local isMythic = IsMythicItem(itemLink)
+    local currentForge = GetForgeLevelFromLink(itemLink)
+  
+    local attuneProg = 0
+    if GetItemLinkAttuneProgress then
+      attuneProg = GetItemLinkAttuneProgress(itemLink) or 0
+    end
+  
+    -- Updated: BoE & fully attuned => GREED, else PASS
+    if isAtt and attuneProg >= 100 then
+      if isBoE and qtRollDB.autoGreed > 0 then
+        qtRollDebug(("Fully attuned BoE (100%%) – GREED: %s")
+          :format(itemLink2 or itemLink))
+        DoRoll(2)
+        return
+      else
+        qtRollDebug(("Fully attuned (100%%) – PASS: %s")
+          :format(itemLink2 or itemLink))
+        DoRoll(0)
+        return
+      end
+    end
+  
+    -- Enhanced BoP duplicate check
+    if isBoP and not isTok then
+      local foundDupe, dupeLink = ItemExistsInBags(currentItemId,
+        itemName)
+      if foundDupe then
+        if isMythic then
+          qtRollDebug("Duplicate mythic BoP; disenchant: " ..
+            (itemLink2 or itemLink))
+          DoRoll(3)
+          return
+        else
+          qtRollDebug("Duplicate non-token BoP; pass: " ..
+            (itemLink2 or itemLink))
+          DoRoll(0)
+          return
+        end
+      end
+    end
+  
+    -- Forge logic
 
-    UpdateItemDisplay(self, itemLink)
-end
-
-local function BagnonGuildBank_OnUpdate(self, elapsed)
-    -- Only update if BagnonFrameguildbank is visible
-    if not _G.BagnonFrameguildbank or not _G.BagnonFrameguildbank:IsVisible() then
+    -- 1) BoE + any forge tier (i.e. currentForge > BASE) => NEED
+    if isBoE and currentForge > FORGE_LEVEL_MAP.BASE then
+        qtRollDebug(("Forged BoE – NEED: %s")
+          :format(itemLink2 or itemLink))
+        DoRoll(1)  -- NEED
         return
     end
 
-    -- More aggressive update - every 0.05 seconds
-    self.attuneLastUpdate = self.attuneLastUpdate or 0
-    self.attuneLastUpdate = self.attuneLastUpdate + elapsed
-    if self.attuneLastUpdate < 0.05 then return end -- Update every 0.05 seconds
-    self.attuneLastUpdate = 0
-
-    -- Extract slot number from frame name (e.g., "BagnonGuildItemSlot5" -> 5)
-    local frameName = self:GetName()
-    local slotNum = tonumber(string.match(frameName, "BagnonGuildItemSlot(%d+)"))
-    if not slotNum then return end
-
-    -- Try different methods to get guild bank item link
-    local itemLink = nil
-    
-    -- Method 1: Try GetGuildBankItemLink if it exists
-    if _G.GetGuildBankItemLink then
-        local tab = GetCurrentGuildBankTab and GetCurrentGuildBankTab() or 1
-        itemLink = GetGuildBankItemLink(tab, slotNum)
-    end
-    
-    -- Method 2: Try Bagnon-specific methods if available
-    if not itemLink and _G.Bagnon and _G.Bagnon.GetItemLink then
-        itemLink = _G.Bagnon.GetItemLink(self)
-    end
-    
-    -- Method 3: Check if the frame has itemLink property (some addons store it)
-    if not itemLink and self.itemLink then
-        itemLink = self.itemLink
-    end
-    
-    -- Method 4: Try tooltip scanning as fallback
-    if not itemLink then
-        -- Create a hidden tooltip for scanning
-        if not _G.AttuneProgressScanTooltip then
-            _G.AttuneProgressScanTooltip = CreateFrame("GameTooltip", "AttuneProgressScanTooltip", UIParent, "GameTooltipTemplate")
-            _G.AttuneProgressScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
-        end
-        
-        _G.AttuneProgressScanTooltip:ClearLines()
-        _G.AttuneProgressScanTooltip:SetOwner(self, "ANCHOR_NONE")
-        
-        -- Try to set tooltip to this item
-        if self.hasItem then
-            _G.AttuneProgressScanTooltip:SetGuildBankItem(GetCurrentGuildBankTab and GetCurrentGuildBankTab() or 1, slotNum)
-            local itemName = _G.AttuneProgressScanTooltipTextLeft1 and _G.AttuneProgressScanTooltipTextLeft1:GetText()
-            if itemName then
-                -- This is a basic fallback - we have the name but not the full link
-                -- The attunement system might still work with just the name in some cases
-                itemLink = itemName
+    -- 2) BoP + equippable + strictly better forge than any you already own => NEED
+    if isBoP and IsUsableItem(itemLink) then
+        local worstForge  -- will hold the lowest‐tier forge you already have
+        -- scan your bags
+        for bag = 0, 4 do
+            for slot = 1, GetContainerNumSlots(bag) do
+                local linkBag = GetContainerItemLink(bag, slot)
+                if linkBag then
+                    local idBag = tonumber(linkBag:match("item:(%d+)"))
+                    if idBag == currentItemId then
+                        local forgeBag = GetForgeLevelFromLink(linkBag)
+                        if not worstForge or forgeBag < worstForge then
+                            worstForge = forgeBag
+                        end
+                    end
+                end
             end
         end
+        -- scan your equipped gear (slots 1–19)
+        for slotID = 1, 19 do
+            local linkEq = GetInventoryItemLink("player", slotID)
+            if linkEq then
+                local idEq = tonumber(linkEq:match("item:(%d+)"))
+                if idEq == currentItemId then
+                    local forgeEq = GetForgeLevelFromLink(linkEq)
+                    if not worstForge or forgeEq < worstForge then
+                        worstForge = forgeEq
+                    end
+                end
+            end
+        end
+
+        -- if we found an older forge version and this one is strictly higher:
+        if worstForge and currentForge > worstForge then
+            qtRollDebug(("Upgraded BoP – NEED (old:%d → new:%d): %s")
+              :format(worstForge, currentForge, itemLink2 or itemLink))
+            DoRoll(1)  -- NEED
+            return
+        end
     end
-
-    UpdateItemDisplay(self, itemLink)
-end
-
--- Options Panel Creation
-local function CreateOptionsPanel()
-    -- Main Panel
-    local panel = CreateFrame("Frame")
-    panel.name = CONST_ADDON_NAME
-
-    -- Title
-    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 16, -16)
-    title:SetText(CONST_ADDON_NAME .. " Options")
-
-    -- Checkbutton helper function
-    local function CreateCheckbox(parent, text, settingKey, anchorFrame, offsetY)
-        local checkboxName = "AttuneProgressCheckbox_" .. settingKey
-        local cb = CreateFrame("CheckButton", checkboxName, parent,
-                               "InterfaceOptionsCheckButtonTemplate")
-        cb:SetPoint("TOPLEFT", anchorFrame, "BOTTOMLEFT", 0, offsetY)
-    
-        local textObject = _G[cb:GetName() .. "Text"]
-        if textObject then
-            textObject:SetText(text)
+  
+    -- Token need
+    if qtRollDB.needOnToken == 1 and isTok and TokenIsForPlayer(itemLink)
+    then
+      qtRollDebug("Need token for player: " .. (itemLink2 or itemLink))
+      DoRoll(1)
+      return
+    end
+  
+    -- Attunement need
+    if qtRollDB.autoNeed > 0 and isAtt and not hasAttune then
+        if qtRollDB.needOnNewAffixOnly == 1 then
+            if HasNewAffixes(itemLink) then
+                qtRollDebug(
+                  "Need attunable with new affixes: "
+                  .. (itemLink2 or itemLink)
+                )
+                DoRoll(1)
+                return
+            end
         else
-            for i = 1, cb:GetNumRegions() do
-                local region = select(i, cb:GetRegions())
-                if region and region:GetObjectType() == "FontString" then
-                    region:SetText(text)
+            qtRollDebug(
+              "Need attunable (no prog): " .. (itemLink2 or itemLink)
+            )
+            DoRoll(1)
+            return
+        end
+    end
+  
+    -- Greed checks
+    if qtRollDB.autoGreed > 0 and isBoE then
+      qtRollDebug("Greed BoE: " .. (itemLink2 or itemLink))
+      DoRoll(2)
+      return
+    elseif qtRollDB.greedOnLockbox > 0 and isLock then
+      qtRollDebug("Greed lockbox: " .. (itemLink2 or itemLink))
+      DoRoll(2)
+      return
+    elseif qtRollDB.greedOnResource > 0 and isRes then
+      qtRollDebug("Greed resource: " .. (itemLink2 or itemLink))
+      DoRoll(2)
+      return
+    end
+  
+    -- Mythic BoP disenchant
+    if isMythic and isBoP then
+      if not isAtt then
+        qtRollDebug("Disenchant mythic BoP (not attunable): " ..
+          (itemLink2 or itemLink))
+        DoRoll(3)
+        return
+      elseif hasAttune then
+        qtRollDebug("Disenchant mythic BoP (has progress): " ..
+          (itemLink2 or itemLink))
+        DoRoll(3)
+        return
+      end
+    end
+  
+    -- Auto‐pass BoP not attunable
+    if qtRollDB.autoPass > 0 and isBoP and not isAtt and
+      itemType ~= "Recipe" then
+      qtRollDebug("Pass BoP (not attun) – " .. (itemLink2 or itemLink))
+      DoRoll(0)
+      return
+    elseif rarity and rarity < 4 then
+      qtRollDebug("Pass low rarity (rarity=" .. rarity .. "): " ..
+        (itemLink2 or itemLink))
+      DoRoll(0)
+      return
+    end
+  
+    qtRollDebug("No rule matched – default IGNORE: " ..
+      (itemLink2 or itemLink))
+  end)
+
+-- Slash commands remain the same but with updated test function
+SLASH_QTROLL1 = "/qtroll"
+SlashCmdList["QTROLL"] = function(msg)
+    local args = {}
+    for arg_str in msg:gmatch("%S+") do table.insert(args, arg_str) end
+    local command = args[1] and args[1]:lower() or ""
+    local fullItemInput = msg:match("^%s*%S+%s+(.+)$") 
+
+    qtRollDB = qtRollDB or {} 
+    qtRollDB.autoNeedCustomList = qtRollDB.autoNeedCustomList or {} 
+
+    if command == "debug" then
+        qtRollDB.debugMode = (qtRollDB.debugMode == 1) and 0 or 1
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r: Debug messages " .. (qtRollDB.debugMode == 1 and "enabled." or "disabled."))
+    elseif command == "" then 
+        qtRollDB.enabled = (qtRollDB.enabled == 1) and 0 or 1
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r: Addon " .. (qtRollDB.enabled == 1 and "enabled." or "disabled."))
+    elseif command == "needadd" then
+        if not fullItemInput then
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r: Usage: /qtroll needadd <itemLink|itemID|itemName>")
+            return
+        end
+        local itemId = ResolveItemToID(fullItemInput)
+        if itemId then
+            local found = false
+            for _, existingId in ipairs(qtRollDB.autoNeedCustomList) do
+                if existingId == itemId then
+                    found = true
                     break
                 end
             end
-        end
-    
-        cb:SetChecked(Settings[settingKey])
-        cb:SetScript("OnClick", function(self)
-            Settings[settingKey] = self:GetChecked()
-            SaveSettings()
-            AttuneProgress:ForceUpdateAllDisplays()
-        end)
-    
-        -- NEW: tooltip on hover
-        local tip = CheckboxTooltips[settingKey]
-        if tip then
-            cb:SetScript("OnEnter", function(self)
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                GameTooltip:SetText(text, 1, 1, 1)
-                GameTooltip:AddLine(tip, nil, nil, nil, true)
-                GameTooltip:Show()
-            end)
-            cb:SetScript("OnLeave", function(self)
-                GameTooltip:Hide()
-            end)
-        end
-    
-        return cb
-    end
-
-    local lastElement = title
-
-    -- Red Bars Checkbox
-    lastElement = CreateCheckbox(
-        panel,
-        "Show red bars for account-attunable items (not by character)",
-        "showRedForNonAttunable",
-        lastElement,
-        -20
-    )
-
-    -- Bounty Icons Checkbox
-    lastElement = CreateCheckbox(
-        panel,
-        "Show bounty icons",
-        "showBountyIcons",
-        lastElement,
-        -10
-    )
-
-    -- Account Icons Checkbox
-    lastElement = CreateCheckbox(
-        panel,
-        "Show account-attunable icon (blue square)",
-        "showAccountIcons",
-        lastElement,
-        -10
-    )
-
-    -- Progress Text Checkbox
-    lastElement = CreateCheckbox(
-        panel,
-        "Show progress percentage text",
-        "showProgressText",
-        lastElement,
-        -10
-    )
-
-    -- Show "Acc" text for account-attunable items
-    lastElement = CreateCheckbox(
-        panel,
-        "Show 'Acc' text for account-attunable items",
-        "showAccountAttuneText",
-        lastElement,
-        -10
-    )
-
-    -- Fae Mode Checkbox
-    lastElement = CreateCheckbox(
-        panel,
-        "Fae Mode - Show bars even at 100% completion",
-        "faeMode",
-        lastElement,
-        -10
-    )
-    lastElement = CreateCheckbox(
-    panel,
-    "Scan equipped gear",
-    "scanEquipped",
-    lastElement,
-    -10
-    )
-
-    lastElement = CreateCheckbox(
-      panel,
-      "Exclude bars from equipped gear",
-      "excludeEquippedBars",
-      lastElement,
-      -10
-    )
-
-
-    -- Description
-    --[[--
-    local description = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    description:SetPoint("TOPLEFT", lastElement, "BOTTOMLEFT", 0, -30)
-    description:SetWidth(500)
-    description:SetJustifyH("LEFT")
-    description:SetText(
-        "AttuneProgress enhances your item display with attunement information.\n\n" ..
-            "Yellow bars: Items attunable by your character (height indicates progress).\n" ..
-            "Red bars: Items attunable by account, but not by your current character (when enabled).\n" ..
-            "Gold icons: Bountied items.\n" ..
-            "Blue squares: Account-attunable items.\n" ..
-            "'Acc' text: Items attunable by account, not by your character (when enabled).\n" ..
-            "'Resist' text: Resistance armor items.\n" ..
-            "Fae Mode: Always show bars, even at 100% completion.\n\n" ..
-            "Supported: Blizzard bags, ElvUI bags, AdiBags, Bagnon Guild Bank\n\n" ..
-            "Check the 'Colors' subcategory to customize bar colors."
-    )
-    --]]--
-
-    -- Add to Blizzard Interface Options
-    if InterfaceOptions_AddCategory then
-        InterfaceOptions_AddCategory(panel)
-    end
-
-    return panel
-end
-
-local function CreateColorOptionsPanel()
-    local cp = CreateFrame("Frame")
-    cp.name   = 'Colors'
-    cp.parent = CONST_ADDON_NAME
-  
-    local header = cp:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
-    header:SetPoint('TOPLEFT', 16, -16)
-    header:SetText(CONST_ADDON_NAME .. ' - Color Settings')
-  
-    local lastSwatch = header
-    local SPACING    = -28
-  
-    -- first: account‐attunable bar colour
-    lastSwatch = CreateColorPicker(
-      cp,
-      'Account-attunable bar colour',
-      Settings,
-      'nonAttunableBarColor',
-      lastSwatch,
-      SPACING
-    )
-  
-    -- then each forge‐tier
-    for lvl = 0, 3 do
-      local key   = ForgeLevelNames[lvl]
-      local label = key:lower():gsub("^%l", string.upper) .. ' bar colour'
-      lastSwatch = CreateColorPicker(
-        cp,
-        label,
-        Settings.forgeColors,
-        key,
-        lastSwatch,
-        SPACING
-      )
-    end
-  
-    -- finally global text colour
-    lastSwatch = CreateColorPicker(
-      cp,
-      'Global text colour',
-      Settings,
-      'textColor',
-      lastSwatch,
-      SPACING
-    )
-  
-    InterfaceOptions_AddCategory(cp)
-    return cp
-  end
-
--- WotLK compatible timer function
-local function DelayedCall(delay, func)
-    local frame = CreateFrame("Frame")
-    local elapsed = 0
-    frame:SetScript("OnUpdate", function(self, dt)
-        elapsed = elapsed + dt
-        if elapsed >= delay then
-            frame:SetScript("OnUpdate", nil)
-            func()
-            frame:Hide() -- Hide the frame to clean up
-        end
-    end)
-    frame:Show() -- Show the frame to make OnUpdate fire
-end
-
--- Periodic frame hooking to catch frames that weren't available initially
-local function PeriodicFrameHooking()
-    local hookFrame = CreateFrame("Frame")
-    local elapsed = 0
-    hookFrame:SetScript("OnUpdate", function(self, dt)
-        elapsed = elapsed + dt
-        if elapsed >= 2.0 then -- Check every 2 seconds
-            elapsed = 0
-            AttuneProgress:HookNewFrames()
-        end
-    end)
-    hookFrame:Show()
-end
-
--- Event Management
--- Event Management (updated)
-local function OnEvent(self, event, ...)
-    if event == "ADDON_LOADED" and ... == CONST_ADDON_NAME then
-        self:UnregisterEvent("ADDON_LOADED")
-        
-        -- Load settings from SavedVariables
-        LoadSettings()
-        
-        -- Delay initialization slightly to ensure all frames are loaded
-        DelayedCall(0.1, function()
-            AttuneProgress:Initialize()
-        end)
-    elseif event == "BAG_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
-        -- Force refresh on bag updates and world entering
-        DelayedCall(0.1, function()
-            AttuneProgress:ForceUpdateAllDisplays()
-        end)
-    elseif event == "UNIT_INVENTORY_CHANGED" then
-        local unit = ...
-        if unit == "player" then
-            AttuneProgress:ForceUpdateAllDisplays()
-        end
-    end
-end
-local eventFrame = CreateFrame("Frame", "AttuneProgressEventFrame", UIParent)
-eventFrame:SetScript("OnEvent", OnEvent)
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("BAG_UPDATE")
-eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
--- Main Functions
-function AttuneProgress:Initialize()
-    print("|cff00ff00AttuneProgress|r: Initializing...")
-
-    LoadSettings()
-    UpdateConfigColors()        
-    CreateOptionsPanel()
-    CreateColorOptionsPanel()    
-    AttuneProgress:EnableUpdates()
-    PeriodicFrameHooking()
-
-    --print("|cff00ff00AttuneProgress|r: Enhanced attunement display loaded and enabled!")
-    print(
-        "|cff00ff00AttuneProgress|r: Use /ap for commands or check Interface > AddOns > " ..
-            CONST_ADDON_NAME .. " for options."
-    )
-    
-    -- Multiple delayed refreshes to catch frames that load later
-    DelayedCall(1.0, function() AttuneProgress:ForceUpdateAllDisplays() end)
-    DelayedCall(3.0, function() AttuneProgress:ForceUpdateAllDisplays() end)
-    DelayedCall(5.0, function() AttuneProgress:ForceUpdateAllDisplays() end)
-end
-
-function AttuneProgress:HookNewFrames()
-    -- Hook container frame updates
-    for i = 1, NUM_CONTAINER_FRAMES do
-        for j = 1, 36 do
-            local frame = _G["ContainerFrame" .. i .. "Item" .. j]
-            if frame and not frame.attuneUpdateHooked then
-                frame:HookScript("OnUpdate", ContainerFrame_OnUpdate)
-                frame.attuneUpdateHooked = true
+            local _, itemLink_add = GetItemInfoCustom and GetItemInfoCustom(itemId) or GetItemInfo(itemId)
+            if not found then
+                table.insert(qtRollDB.autoNeedCustomList, itemId)
+                DEFAULT_CHAT_FRAME:AddMessage(("|cff00bfffqt|r|cffff7d0aRoll|r: Added %s to custom need list."):format(itemLink_add or "item:"..itemId))
+            else
+                DEFAULT_CHAT_FRAME:AddMessage(("|cff00bfffqt|r|cffff7d0aRoll|r: %s is already in the custom need list."):format(itemLink_add or "item:"..itemId))
             end
+        else
+            DEFAULT_CHAT_FRAME:AddMessage(("|cff00bfffqt|r|cffff7d0aRoll|r: Item not found: %s"):format(fullItemInput))
         end
-    end
-
-    -- Hook ElvUI container frame updates
-    for i = 1, #ElvUIContainerSlots do
-        local frameName = ElvUIContainerSlots[i]
-        local frame = _G[frameName]
-        if frame and not frame.attuneUpdateHooked then
-            frame:HookScript("OnUpdate", ElvUIContainer_OnUpdate)
-            frame.attuneUpdateHooked = true
+    elseif command == "needremove" then
+        if not fullItemInput then
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r: Usage: /qtroll needremove <itemLink|itemID|itemName|listIndex>")
+            return
         end
-    end
-
-    -- Hook AdiBags frame updates
-    for i = 1, #AdiBagsSlots do
-        local frameName = AdiBagsSlots[i]
-        local frame = _G[frameName]
-        if frame and not frame.attuneUpdateHooked then
-            frame:HookScript("OnUpdate", AdiBags_OnUpdate)
-            frame.attuneUpdateHooked = true
-        end
-    end
-
-    -- Hook Bagnon Guild Bank frame updates
-    for i = 1, #BagnonGuildBankSlots do
-        local frameName = BagnonGuildBankSlots[i]
-        local frame = _G[frameName]
-        if frame and not frame.attuneUpdateHooked then
-            frame:HookScript("OnUpdate", BagnonGuildBank_OnUpdate)
-            frame.attuneUpdateHooked = true
-        end
-    end
-end
-
-function AttuneProgress:EnableUpdates()
-    AttuneProgress:HookNewFrames()
-    print("|cff00ff00AttuneProgress|r: Updates enabled!")
-end
-
-function AttuneProgress:DisableUpdates()
-    -- Hide all existing bars and icons
-    for i = 1, NUM_CONTAINER_FRAMES do
-		for j = 1, 36 do
-			local frame = _G["ContainerFrame" .. i .. "Item" .. j]
-			if frame and frame:GetName() then
-				local progressFrameName = frame:GetName() .. '_attuneBar'
-				local bountyFrameName = frame:GetName() .. '_Bounty'
-				local iconFrameName = frame:GetName() .. '_Account'
-				local resistFrameName = frame:GetName() .. '_Resist'
-	
-				if _G[progressFrameName] then _G[progressFrameName]:Hide() end
-				if _G[bountyFrameName] then _G[bountyFrameName]:Hide() end
-				if _G[iconFrameName] then _G[iconFrameName]:Hide() end
-				if _G[resistFrameName] then _G[resistFrameName]:Hide() end 
-				if frame.attuneText then frame.attuneText:SetText("") end
-			end
-		end
-	end
-
-    -- Hide ElvUI displays
-    for i = 1, #ElvUIContainerSlots do
-        local frameName = ElvUIContainerSlots[i]
-        local frame = _G[frameName]
-        if frame and frame:GetName() then
-			local progressFrameName = frame:GetName() .. '_attuneBar'
-			local bountyFrameName = frame:GetName() .. '_Bounty'
-			local iconFrameName = frame:GetName() .. '_Account'
-			local resistFrameName = frame:GetName() .. '_Resist'
-
-			if _G[progressFrameName] then _G[progressFrameName]:Hide() end
-			if _G[bountyFrameName] then _G[bountyFrameName]:Hide() end
-			if _G[iconFrameName] then _G[iconFrameName]:Hide() end
-			if _G[resistFrameName] then _G[resistFrameName]:Hide() end 
-			if frame.attuneText then frame.attuneText:SetText("") end
-        end
-    end
-
-    -- Hide AdiBags displays
-    for i = 1, #AdiBagsSlots do
-        local frameName = AdiBagsSlots[i]
-        local frame = _G[frameName]
-        if frame and frame:GetName() then
-			local progressFrameName = frame:GetName() .. '_attuneBar'
-			local bountyFrameName = frame:GetName() .. '_Bounty'
-			local iconFrameName = frame:GetName() .. '_Account'
-			local resistFrameName = frame:GetName() .. '_Resist'
-
-			if _G[progressFrameName] then _G[progressFrameName]:Hide() end
-			if _G[bountyFrameName] then _G[bountyFrameName]:Hide() end
-			if _G[iconFrameName] then _G[iconFrameName]:Hide() end
-			if _G[resistFrameName] then _G[resistFrameName]:Hide() end 
-			if frame.attuneText then frame.attuneText:SetText("") end
-        end
-    end
-
-    -- Hide Bagnon Guild Bank displays
-    for i = 1, #BagnonGuildBankSlots do
-        local frameName = BagnonGuildBankSlots[i]
-        local frame = _G[frameName]
-        if frame and frame:GetName() then
-			local progressFrameName = frame:GetName() .. '_attuneBar'
-			local bountyFrameName = frame:GetName() .. '_Bounty'
-			local iconFrameName = frame:GetName() .. '_Account'
-			local resistFrameName = frame:GetName() .. '_Resist'
-
-			if _G[progressFrameName] then _G[progressFrameName]:Hide() end
-			if _G[bountyFrameName] then _G[bountyFrameName]:Hide() end
-			if _G[iconFrameName] then _G[iconFrameName]:Hide() end
-			if _G[resistFrameName] then _G[resistFrameName]:Hide() end 
-			if frame.attuneText then frame.attuneText:SetText("") end
-        end
-    end
-
-    print("|cff00ff00AttuneProgress|r: All displays cleared!")
-end
-
--- Force a refresh on all currently displayed items
-function AttuneProgress:ForceUpdateAllDisplays()
-    -- Update container frames
-    for i = 1, NUM_CONTAINER_FRAMES do
-        if _G["ContainerFrame" .. i] and _G["ContainerFrame" .. i]:IsVisible() then
-            for j = 1, 36 do
-                local frame = _G["ContainerFrame" .. i .. "Item" .. j]
-                if frame then
-                    local itemLink = GetContainerItemLink(i, j)
-                    UpdateItemDisplay(frame, itemLink)
+        local itemIdToRemove
+        local removed = false
+        local itemRemovedDisplay = fullItemInput 
+        local listIndex = tonumber(fullItemInput)
+        if listIndex and qtRollDB.autoNeedCustomList[listIndex] then
+            itemIdToRemove = qtRollDB.autoNeedCustomList[listIndex]
+            local _, itemLink_rem = GetItemInfoCustom and GetItemInfoCustom(itemIdToRemove) or GetItemInfo(itemIdToRemove)
+            itemRemovedDisplay = itemLink_rem or "item:"..itemIdToRemove
+            table.remove(qtRollDB.autoNeedCustomList, listIndex)
+            removed = true
+        else
+            itemIdToRemove = ResolveItemToID(fullItemInput)
+            if itemIdToRemove then
+                local _, itemLink_rem = GetItemInfoCustom and GetItemInfoCustom(itemIdToRemove) or GetItemInfo(itemIdToRemove)
+                itemRemovedDisplay = itemLink_rem or "item:"..itemIdToRemove 
+                for i = #qtRollDB.autoNeedCustomList, 1, -1 do
+                    if qtRollDB.autoNeedCustomList[i] == itemIdToRemove then
+                        table.remove(qtRollDB.autoNeedCustomList, i)
+                        removed = true
+                        break 
+                    end
                 end
             end
         end
-    end
 
-    -- Update ElvUI container frames
-    for bag = 0, 4 do
-        for slot = 1, 36 do
-            local frameName = "ElvUI_ContainerFrameBag" .. bag .. "Slot" .. slot
-            local frame = _G[frameName]
-            if frame then
-                local itemLink = GetContainerItemLink(bag, slot)
-                UpdateItemDisplay(frame, itemLink)
+        if removed then
+            DEFAULT_CHAT_FRAME:AddMessage(("|cff00bfffqt|r|cffff7d0aRoll|r: Removed %s from custom need list."):format(itemRemovedDisplay))
+        else
+            DEFAULT_CHAT_FRAME:AddMessage(("|cff00bfffqt|r|cffff7d0aRoll|r: Item not found in custom need list or invalid identifier: %s"):format(fullItemInput))
+        end
+    elseif command == "needlist" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r Custom Auto-Need List:")
+        if #qtRollDB.autoNeedCustomList == 0 then
+            DEFAULT_CHAT_FRAME:AddMessage("  List is empty.")
+        else
+            for i, itemId_list in ipairs(qtRollDB.autoNeedCustomList) do
+                local name, link = GetItemInfoCustom and GetItemInfoCustom(itemId_list) or GetItemInfo(itemId_list)
+                DEFAULT_CHAT_FRAME:AddMessage(("[%d] %s"):format(i, link or name or "item:"..itemId_list))
             end
         end
-    end
-
-    -- Update AdiBags frames
-    for i = 1, #AdiBagsSlots do
-        local frameName = AdiBagsSlots[i]
-        local frame = _G[frameName]
-        if frame then
-            -- Let the OnUpdate handler determine the item link
-            AdiBags_OnUpdate(frame, 0.1) -- Force an immediate update
-        end
-    end
-
-    -- Update Bagnon Guild Bank frames
-    if _G.BagnonFrameguildbank and _G.BagnonFrameguildbank:IsVisible() then
-        for i = 1, #BagnonGuildBankSlots do
-            local frameName = BagnonGuildBankSlots[i]
-            local frame = _G[frameName]
-            if frame then
-                -- We'll let the OnUpdate handler determine the item link
-                -- since it has the logic for multiple methods
-                BagnonGuildBank_OnUpdate(frame, 0.1) -- Force an immediate update
-            end
-        end
-    end
-    if Settings.scanEquipped then
-        for _, info in ipairs(EquipmentSlotMapping) do
-            local slotFrame = _G[info.frame]
-            if slotFrame then
-                local link = GetInventoryItemLink("player", info.id)
-                UpdateItemDisplay(slotFrame, link)
-            end
-        end
-    end
-end
-
--- Slash Commands
-SLASH_ATTUNEPROGRESS1 = "/attuneprogress"
-SLASH_ATTUNEPROGRESS2 = "/ap"
-SlashCmdList["ATTUNEPROGRESS"] = function(msg)
-    local cmd = string.lower(msg or "")
-
-    if cmd == "reload" or cmd == "r" then
-        AttuneProgress:Initialize()
-        print("|cff00ff00AttuneProgress|r: Reloaded!")
-    elseif cmd == "refresh" or cmd == "re" then
-        AttuneProgress:ForceUpdateAllDisplays()
-        print("|cff00ff00AttuneProgress|r: All displays refreshed!")
-    elseif cmd == "options" or cmd == "config" then
-        InterfaceOptionsFrame_OpenToCategory(CONST_ADDON_NAME)
-    elseif cmd == "acc" then
-        Settings.showAccountAttuneText = not Settings.showAccountAttuneText
-        SaveSettings() -- Save the change
-        print(
-            string.format(
-                "|cff00ff00AttuneProgress|r: Show 'Acc' text for account attunable items %s.",
-                Settings.showAccountAttuneText and "enabled" or "disabled"
-            )
-        )
-        AttuneProgress:ForceUpdateAllDisplays()
-    elseif cmd == "fae" then
-        Settings.faeMode = not Settings.faeMode
-        SaveSettings() -- Save the change
-        print(
-            string.format(
-                "|cff00ff00AttuneProgress|r: Fae Mode %s.",
-                Settings.faeMode and "enabled" or "disabled"
-            )
-        )
-        AttuneProgress:ForceUpdateAllDisplays()
     else
-        print("|cff00ff00AttuneProgress|r Commands:")
-        print("  /ap refresh - Refresh all item displays")
-        print("  /ap acc - Toggle 'Acc' text for account-attunable items")
-        print("  /ap fae - Toggle Fae Mode (show bars even at 100%)")
-        print("  /ap options - Open options panel")
-        print("")
-        print("You can also access options via Interface > AddOns > " .. CONST_ADDON_NAME)
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r: Unknown command. Usage: /qtroll [debug|needadd|needremove|needlist]")
     end
 end
 
--- Legacy function for compatibility (now just calls refresh)
-function AttuneProgress:Toggle()
-    AttuneProgress:ForceUpdateAllDisplays()
+-- Updated test command with new features
+SLASH_QTROLLTEST1 = "/qtrolltest"
+SlashCmdList["QTROLLTEST"] = function(msg)
+    if not qtRollDB or qtRollDB.enabled == 0 then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00bfffqt|r|cffff7d0aRoll|r: Addon is currently disabled. Enable with /qtroll or via settings.")
+        return
+    end
+    
+    local link_input = msg:match("|c.-|r") or msg 
+    if not link_input or link_input == "" then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r: Provide item name, ID, or link for testing.")
+        return
+    end
+
+    local name, actualLinkToTest, rarity, _, _, itype, isub
+    local actualItemId = ResolveItemToID(link_input)
+    
+    if actualItemId then
+        name, actualLinkToTest, rarity, _, _, itype, isub = GetItemInfoCustom and GetItemInfoCustom(actualItemId) or GetItemInfo(actualItemId)
+        if not name then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: No info for item ID '" .. actualItemId .. "'")
+            return
+        end
+    else
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: Failed to resolve item: " .. link_input)
+        return
+    end
+    
+    if not actualLinkToTest then actualLinkToTest = "item:"..actualItemId end
+
+    -- Test all the logic
+    if rarity == 5 then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NO ACTION (Legendary Item)"); 
+        return
+    end
+
+    -- Custom/default lists
+    for _, customNeedId in ipairs(qtRollDB.autoNeedCustomList or {}) do
+        if customNeedId == actualItemId then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Custom List)"); return
+        end
+    end
+    
+    for _, defaultNeedId in ipairs(qtRollDB.defaultNeedRoll or {}) do
+        if defaultNeedId == actualItemId then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Default List)"); return
+        end
+    end
+
+    if TooltipHasAlreadyKnown(actualLinkToTest) then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Known)"); return
+    end
+
+    if itype == "Recipe" then
+        if isub == "Class Books" then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Codex Recipe)"); return
+        elseif qtRollDB.greedOnRecipe == 1 then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => GREED (Unknown Recipe)"); return
+        end
+    end
+
+    local isAtt_test = IsAttunable(actualLinkToTest)
+    local hasAttuneProg_test = HasAttuneProgress(actualLinkToTest)
+    local isBoE_test, isBoP_test = GetBindingTypeFromTooltip(actualLinkToTest)
+    local isRes_test = RESOURCE_TYPES[itype]
+    local isLock_test = IsLockbox(actualLinkToTest)
+    local isMythic_test = IsMythicItem(actualLinkToTest)
+    local currentForgeLevel_test = GetForgeLevelFromLink(actualLinkToTest)
+    local isTok_test_val = IsToken(actualLinkToTest)
+    local isTokP_test = isTok_test_val and TokenIsForPlayer(actualLinkToTest)
+
+    -- Test duplicate check
+    local foundDupe, dupeLink = ItemExistsInBags(actualItemId, name)
+    if isBoP_test and not isTok_test_val and foundDupe then
+        if isMythic_test then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Duplicate Mythic BoP)"); return
+        else
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Duplicate BoP)"); return
+        end
+    end
+
+    if qtRollDB.needOnToken == 1 and isTokP_test then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Token)"); return
+    end
+
+    if qtRollDB.autoNeed > 0 and isAtt_test and not hasAttuneProg_test then
+        if qtRollDB.needOnNewAffixOnly == 1 then
+            if HasNewAffixes(actualLinkToTest) then
+                print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Attun, new affixes)"); return
+            else
+                print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => SKIP (Attun, no new affixes)");
+            end
+        else
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Attun, no prog)"); return
+        end
+    end
+
+    if qtRollDB.autoGreed > 0 and isBoE_test then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => GREED (BoE)"); return
+    end
+
+    if qtRollDB.greedOnLockbox > 0 and isLock_test then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => GREED (Lockbox)"); return
+    end
+
+    if qtRollDB.greedOnResource > 0 and isRes_test then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => GREED (Resource)"); return
+    end
+    
+    if isMythic_test and isBoP_test then
+        if not isAtt_test or hasAttuneProg_test then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Mythic BoP, not useful)"); return
+        end
+    end
+
+    if qtRollDB.autoPass > 0 and isBoP_test and not isAtt_test and itype ~= "Recipe" then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (BoP, not attun)"); return
+    end
+
+    if rarity and rarity < 4 then 
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Rarity<4)"); return
+    end
+
+    print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NO ACTION (Fell through all rules)");
 end
+
+qtRollDebug("qtRoll Addon loaded. v4")
