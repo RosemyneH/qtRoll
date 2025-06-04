@@ -536,22 +536,26 @@ f:SetScript("OnEvent", function(self, event, rollID)
   
     -- Attunement need
     if qtRollDB.autoNeed > 0 and isAtt and not hasAttune then
-        if qtRollDB.needOnNewAffixOnly == 1 then
-            if HasNewAffixes(itemLink) then
-                qtRollDebug(
-                  "Need attunable with new affixes: "
-                  .. (itemLink2 or itemLink)
-                )
-                DoRoll(1)
-                return
-            end
+      if qtRollDB.needOnNewAffixOnly == 1 then
+        if HasNewAffixes(itemLink) then
+          qtRollDebug("Need attunable with NEW affixes: "..itemLink)
+          DoRoll(1)
+        elseif not(HasNewAffixes(itemLink)) and isBoE then
+          qtRollDebug("Greed BoE: " .. (itemLink2 or itemLink))
+          DoRoll(2)
+        elseif isMythic and isBoP then
+            qtRollDebug("Disenchant mythic BoP (not attunable): " ..
+              (itemLink2 or itemLink))
+            DoRoll(3)
         else
-            qtRollDebug(
-              "Need attunable (no prog): " .. (itemLink2 or itemLink)
-            )
-            DoRoll(1)
-            return
+          qtRollDebug("Pass (no new affixes): "..itemLink)
+          DoRoll(0)
         end
+      else
+        qtRollDebug("Need attunable (no progress): "..itemLink)
+        DoRoll(1)
+      end
+      return
     end
   
     -- Greed checks
@@ -600,8 +604,6 @@ f:SetScript("OnEvent", function(self, event, rollID)
     qtRollDebug("No rule matched – default IGNORE: " ..
       (itemLink2 or itemLink))
   end)
-
--- Slash commands remain the same but with updated test function
 SLASH_QTROLL1 = "/qtroll"
 SlashCmdList["QTROLL"] = function(msg)
     local args = {}
