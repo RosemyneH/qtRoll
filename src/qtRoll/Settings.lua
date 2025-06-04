@@ -1,6 +1,4 @@
--- qtRoll 3.3.5a Settings Panel, DRY + tooltips + dependent control
-local qtRollDB = qtRollDB or {}
-
+qtRollDB = qtRollDB or {}
 -- create the options panel
 local panel = CreateFrame("Frame", "qtRollConfigPanel", UIParent)
 panel.name = "qtRoll"
@@ -32,7 +30,7 @@ local options = {
     { key = "autoNeed",
       text = "Auto Need (Attunable)",
       tooltip = "Automatically Need attunable items\n(without any progression).",
-      default = 0,
+      default = 1,
       col = 1 },
     { key = "needOnNewAffixOnly",
       text = "Need New Affixes Only",
@@ -40,39 +38,39 @@ local options = {
         "Only Need attunable items if they have\n"
       .. "  any unlearned affixes.\n\n"
       .. "Requires Auto Need to be enabled.",
-      default = 0,
+      default = 1,
       col = 1,
       depends = "autoNeed" },
     { key = "autoGreed",
       text = "Auto Greed (BoE)",
       tooltip = "Automatically Greed on all BoE items.",
-      default = 0,
+      default = 1,
       col = 1 },
     { key = "autoPass",
       text = "Auto Pass (BoP)",
       tooltip = "Automatically Pass on BoP items\nthat can’t be attuned.",
-      default = 0,
+      default = 1,
       col = 1 },
     { key = "needOnToken",
       text = "Auto Need (Class Tokens)",
       tooltip = "Automatically Need class tokens\nwhen they show up.",
-      default = 0,
+      default = 1,
       col = 1 },
     { key = "needOnWeakerForge",
       text = "Auto Need (Weaker Forge)",
       tooltip = "Only Need items whose Titan-forge bonus\n"
       .. "    is strictly higher than yours.",
-      default = 0,
+      default = 1,
       col = 1 },
     { key = "greedOnResource",
       text = "Auto Greed (Resources)",
       tooltip = "Automatically Greed on crafting resources.",
-      default = 0,
+      default = 1,
       col = 2 },
     { key = "greedOnLockbox",
       text = "Auto Greed (Lockboxes)",
       tooltip = "Automatically Greed on lockboxes.",
-      default = 0,
+      default = 1,
       col = 2 },
     { key = "greedOnRecipe",
       text = "Auto Greed (Unknown Recipes)",
@@ -122,27 +120,28 @@ end
 
 -- save all settings
 local function SaveSettings()
-    qtRollDB = qtRollDB or {}
-    for _, opt in ipairs(options) do
-        qtRollDB[opt.key] =
-          buttons[opt.key]:GetChecked() and 1 or 0
-    end
+  _G.qtRollDB = _G.qtRollDB or {}
+  for _, opt in ipairs(options) do
+    _G.qtRollDB[opt.key] = buttons[opt.key]:GetChecked() and 1 or 0
+  end
 end
 
 -- refresh (and default-fill) all
 local function RefreshSettings()
-    qtRollDB = qtRollDB or {}
+    _G.qtRollDB = _G.qtRollDB or {}
     for _, opt in ipairs(options) do
-        if qtRollDB[opt.key] == nil then
-            qtRollDB[opt.key] = opt.default
-        end
-        buttons[opt.key]:SetChecked(
-          qtRollDB[opt.key] == 1
-        )
+      if _G.qtRollDB[opt.key] == nil then
+        _G.qtRollDB[opt.key] = opt.default
+      end
+      buttons[opt.key]:SetChecked(_G.qtRollDB[opt.key] == 1)
     end
     -- disable dependent
     local autoNeedOn = qtRollDB.autoNeed == 1
-    buttons.needOnNewAffixOnly:SetEnabled(autoNeedOn)
+    if autoNeedOn then
+      buttons.needOnNewAffixOnly:Enable()
+    else
+      buttons.needOnNewAffixOnly:Disable()
+    end
 end
 
 -- defaults handler
@@ -159,3 +158,14 @@ panel.okay    = SaveSettings
 panel.refresh = RefreshSettings
 
 InterfaceOptions_AddCategory(panel)
+
+-- on ADDON_LOADED we know our saved-vars are in place,
+-- so fill any nil values with our `options[].default`.
+local init = CreateFrame("Frame")
+init:RegisterEvent("ADDON_LOADED")
+init:SetScript("OnEvent", function(self, evt, name)
+  if name == "qtRoll" then
+    RefreshSettings()
+    self:UnregisterEvent("ADDON_LOADED")
+  end
+end)

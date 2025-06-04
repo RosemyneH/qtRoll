@@ -33,11 +33,29 @@ else
     -- Add new settings if they don't exist
     if qtRollDB.needOnNewAffixOnly == nil then
         qtRollDB.needOnNewAffixOnly = 0
-    end
-    if qtRollDB.greedOnRecipe == nil then
+      end
+      if qtRollDB.greedOnRecipe == nil then
         qtRollDB.greedOnRecipe = 1
+      end
+    
+      -- back-fill *all* of our other defaults in one go
+      local __defaults = {
+        enabled           = 1,
+        debugMode         = 0,
+        needOnWeakerForge = 1,
+        needOnToken       = 1,
+        autoNeed          = 1,
+        autoGreed         = 1,
+        greedOnLockbox    = 1,
+        greedOnResource   = 1,
+        autoPass          = 1,
+      }
+      for k, v in pairs(__defaults) do
+        if qtRollDB[k] == nil then
+          qtRollDB[k] = v
+        end
+      end
     end
-end
 
 local FORGE_LEVEL_MAP = {
     BASE = 0,
@@ -143,21 +161,7 @@ local function HasNewAffixes(itemLink)
     local itemId = tonumber(itemLink:match("item:(%d+)"))
     if not itemId then return false end
     
-    if GetItemAffixMask then
-        local possibleMask1, possibleMask2, attunedMask1, attunedMask2 = GetItemAffixMask(itemId)
-        if possibleMask1 and attunedMask1 then
-            -- Check if there are possible affixes that haven't been attuned
-            local newAffixes1 = bit.band(possibleMask1, bit.bnot(attunedMask1 or 0))
-            local newAffixes2 = 0
-            if possibleMask2 and attunedMask2 then
-                newAffixes2 = bit.band(possibleMask2, bit.bnot(attunedMask2))
-            end
-            return newAffixes1 > 0 or newAffixes2 > 0
-        end
-    end
-    
-    -- If we can't determine, assume there might be new affixes
-    return true
+    return HasAttunedAnyVariantOfItem(itemID)
 end
 
 local function ItemExistsInBags(itemId, itemName)
@@ -215,42 +219,52 @@ local TokenScanner = CreateFrame("GameTooltip",
 TokenScanner:SetOwner(UIParent, "ANCHOR_NONE")
 
 local function TokenIsForPlayer(itemLink)
-  -- Gather every string UnitClass returns (localized, English, etc.)
-  local raw = { UnitClass("player") }
-  local classNames = {}
-  for _, v in ipairs(raw) do
-    if type(v) == "string" then
-      classNames[#classNames + 1] = v
+    -- Gather every string UnitClass returns (localized, English, etc.),
+    -- even if one of them is nil in the middle.
+    local classNames = {}
+    local c1, c2, c3 = UnitClass("player")
+    for _, c in ipairs({ c1, c2, c3 }) do
+      if type(c) == "string" then
+        classNames[#classNames + 1] = c
+      end
     end
-  end
-  if #classNames == 0 then
-    qtRollDebug("TokenIsForPlayer: no class names from UnitClass")
-    return false
-  end
-
-  -- Populate tooltip
-  TokenScanner:ClearLines()
-  TokenScanner:SetHyperlink(itemLink)
-
-  -- Scan each line for *any* of our class names
-  for i = 2, TokenScanner:NumLines() do
-    local line = _G["qtRollTokenTooltipTextLeft"..i]
-    if line then
+  
+    if #classNames == 0 then
+      qtRollDebug("TokenIsForPlayer: no class names from UnitClass")
+      return false
+    end
+  
+    -- Lower‐case them once so we can do a case‐insensitive search
+    for i = 1, #classNames do
+      classNames[i] = classNames[i]:lower()
+    end
+  
+    -- Populate tooltip
+    TokenScanner:ClearLines()
+    TokenScanner:SetHyperlink(itemLink)
+  
+    -- Scan each line for *any* of our class names
+    for i = 2, TokenScanner:NumLines() do
+      local line = _G["qtRollTokenTooltipTextLeft"..i]
+      if not line then
+        break
+      end
       local text = line:GetText()
       if text then
+        local tl = text:lower()
         for _, cls in ipairs(classNames) do
-          if text:find(cls, 1, true) then
+          -- plain find is fine now since we lowered both strings
+          if tl:find(cls, 1, true) then
             TokenScanner:Hide()
             return true
           end
         end
       end
     end
+  
+    TokenScanner:Hide()
+    return false
   end
-
-  TokenScanner:Hide()
-  return false
-end
 
 local function GetBindingTypeFromTooltip(itemLink)
     local tooltip = CreateFrame("GameTooltip", "qtRollScanTooltip", nil, "GameTooltipTemplate")
@@ -328,196 +342,239 @@ local f = CreateFrame("Frame")
 f:RegisterEvent("START_LOOT_ROLL")
 f:SetScript("OnEvent", function(self, event, rollID)
     if not qtRollDB or qtRollDB.enabled == 0 then
-        return
+      return
     end
-
+  
     local itemLink = GetLootRollItemLink(rollID)
     if not itemLink then
-        qtRollDebug("START_LOOT_ROLL: invalid itemLink for rollID " .. tostring(rollID))
-        return
+      qtRollDebug("START_LOOT_ROLL: invalid itemLink for rollID " ..
+        tostring(rollID))
+      return
     end
-
+  
     local currentItemId = tonumber(itemLink:match("item:(%d+)"))
     if not currentItemId then
-        qtRollDebug("START_LOOT_ROLL: Could not parse itemID from link: " .. itemLink)
-        return
+      qtRollDebug("START_LOOT_ROLL: Could not parse itemID from link: " ..
+        itemLink)
+      return
     end
-
-    local itemName, itemLink2, rarity, _, _, itemType, itemSubType = GetItemInfoCustom and GetItemInfoCustom(currentItemId) or GetItemInfo(currentItemId)
+  
+    local itemName, itemLink2, rarity, _, _, itemType, itemSubType =
+      (GetItemInfoCustom and GetItemInfoCustom(currentItemId)) or
+      GetItemInfo(currentItemId)
     qtRollDB = qtRollDB or {}
-
+  
     if rarity == 5 then
-        qtRollDebug("Item is Legendary: " .. (itemLink2 or itemLink) .. ". Taking NO ACTION (manual roll).")
-        return
+      qtRollDebug("Item is Legendary: " .. (itemLink2 or itemLink) ..
+        ". Taking NO ACTION (manual roll).")
+      return
     end
-    
-    local isBoE_check, isBoP_check = GetBindingTypeFromTooltip(itemLink)
+  
+    local isBoE, isBoP = GetBindingTypeFromTooltip(itemLink)
     local isTok = IsToken(itemLink)
-
+  
     local function DoRoll(choice)
-        RollOnLoot(rollID, choice)
-        if choice > 0 and isBoP_check then 
-            ConfirmLootRoll(rollID, choice)
-        end
+      RollOnLoot(rollID, choice)
+      if choice > 0 and isBoP then
+        ConfirmLootRoll(rollID, choice)
+      end
     end
-
-    -- Custom need list check
+  
+    -- Custom need list
     if currentItemId and qtRollDB.autoNeedCustomList then
-        for _, customNeedId in ipairs(qtRollDB.autoNeedCustomList) do
-            if customNeedId == currentItemId then
-                qtRollDebug("Need custom list item: " .. (itemLink2 or itemLink))
-                DoRoll(1)
-                return
-            end
+      for _, id in ipairs(qtRollDB.autoNeedCustomList) do
+        if id == currentItemId then
+          qtRollDebug("Need custom list item: " .. (itemLink2 or itemLink))
+          DoRoll(1)
+          return
         end
+      end
     end
-
-    -- Default need list check
-    if currentItemId and qtRollDB.defaultNeedRoll and type(qtRollDB.defaultNeedRoll) == "table" then
-        for _, defaultNeedId in ipairs(qtRollDB.defaultNeedRoll) do
-            if defaultNeedId == currentItemId then
-                qtRollDebug("Need default list item: " .. (itemLink2 or itemLink))
-                DoRoll(1)
-                return
-            end
+  
+    -- Default need list
+    if currentItemId and qtRollDB.defaultNeedRoll and
+      type(qtRollDB.defaultNeedRoll) == "table" then
+      for _, id in ipairs(qtRollDB.defaultNeedRoll) do
+        if id == currentItemId then
+          qtRollDebug("Need default list item: " ..
+            (itemLink2 or itemLink))
+          DoRoll(1)
+          return
         end
+      end
     end
-
-    -- Already known check
+  
+    -- Already known
     if TooltipHasAlreadyKnown(itemLink) then
-        qtRollDebug("Passing known (recipe or item): " .. (itemLink2 or itemLink))
-        DoRoll(0)
-        return
+      qtRollDebug("Passing known (recipe or item): " ..
+        (itemLink2 or itemLink))
+      DoRoll(0)
+      return
     end
-
+  
     -- Recipe handling
     if itemType == "Recipe" then
-        if itemSubType == "Class Books" then 
-            qtRollDebug("Passing codex class book (recipe): " .. (itemLink2 or itemLink))
-            DoRoll(0)
-            return
-        elseif qtRollDB.greedOnRecipe == 1 then
-            qtRollDebug("Greed unknown recipe: " .. (itemLink2 or itemLink))
-            DoRoll(2)
-            return
-        else
-            qtRollDebug("Item is an unknown, non-codex recipe: " .. (itemLink2 or itemLink) .. ". Recipe handling disabled.")
-        end
+      if itemSubType == "Class Books" then
+        qtRollDebug("Passing codex class book (recipe): " ..
+          (itemLink2 or itemLink))
+        DoRoll(0)
+        return
+      elseif qtRollDB.greedOnRecipe == 1 then
+        qtRollDebug("Greed unknown recipe: " .. (itemLink2 or itemLink))
+        DoRoll(2)
+        return
+      else
+        qtRollDebug("Recipe handling disabled for non-codex: " ..
+          (itemLink2 or itemLink))
+      end
     end
-
+  
     local isAtt = IsAttunable(itemLink)
-    local hasAttuneProgress = HasAttuneProgress(itemLink)
+    local hasAttune = HasAttuneProgress(itemLink)
     local isRes = RESOURCE_TYPES[itemType]
     local isLock = IsLockbox(itemLink)
     local isMythic = IsMythicItem(itemLink)
-    local currentForgeLevel = GetForgeLevelFromLink(itemLink)
-
-    -- Enhanced BoP duplicate check with mythic handling
-    if isBoP_check and not isTok then
-        local foundDuplicate, duplicateLink = ItemExistsInBags(currentItemId, itemName)
-        if foundDuplicate then
-            if isMythic then
-                qtRollDebug("Found duplicate BoP mythic item; disenchanting: " .. (itemLink2 or itemLink))
-                DoRoll(3) -- Disenchant
-                return
-            else
-                qtRollDebug("Found duplicate BoP non-token in bags; passing: " .. (itemLink2 or itemLink))
-                DoRoll(0)
-                return
-            end
-        end
+    local currentForge = GetForgeLevelFromLink(itemLink)
+  
+    local attuneProg = 0
+    if GetItemLinkAttuneProgress then
+      attuneProg = GetItemLinkAttuneProgress(itemLink) or 0
     end
-
-    -- Stronger forge check
-    if qtRollDB.needOnWeakerForge == 1 and currentForgeLevel > 0 then
-        for bag = 0, 4 do
-            for slot = 1, GetContainerNumSlots(bag) do
-                local link_in_bag = GetContainerItemLink(bag, slot)
-                if link_in_bag then
-                    local itemId_in_bag_forge = tonumber(link_in_bag:match("item:(%d+)"))
-                    if itemId_in_bag_forge then
-                        local name_in_bag = GetItemInfoCustom and GetItemInfoCustom(itemId_in_bag_forge) or GetItemInfo(itemId_in_bag_forge)
-                        if name_in_bag and name_in_bag == itemName then 
-                            local tfB = GetForgeLevelFromLink(link_in_bag)
-                            if tfB < currentForgeLevel then
-                                qtRollDebug("Need stronger forge (item in bag is "..tfB..", current is "..currentForgeLevel.."): " .. (itemLink2 or itemLink))
-                                DoRoll(1)
-                                return
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Token check
-    if qtRollDB.needOnToken == 1 and isTok and TokenIsForPlayer(itemLink) then
-        qtRollDebug("Need token for player: " .. (itemLink2 or itemLink))
-        DoRoll(1)
+  
+    -- Updated: BoE & fully attuned => GREED, else PASS
+    if isAtt and attuneProg >= 100 then
+      if isBoE and qtRollDB.autoGreed > 0 then
+        qtRollDebug(("Fully attuned BoE (100%%) – GREED: %s")
+          :format(itemLink2 or itemLink))
+        DoRoll(2)
         return
+      else
+        qtRollDebug(("Fully attuned (100%%) – PASS: %s")
+          :format(itemLink2 or itemLink))
+        DoRoll(0)
+        return
+      end
     end
-
-    -- Attunement check with new affix option
-    if qtRollDB.autoNeed > 0 and isAtt and not hasAttuneProgress then
+  
+    -- Enhanced BoP duplicate check
+    if isBoP and not isTok then
+      local foundDupe, dupeLink = ItemExistsInBags(currentItemId,
+        itemName)
+      if foundDupe then
+        if isMythic then
+          qtRollDebug("Duplicate mythic BoP; disenchant: " ..
+            (itemLink2 or itemLink))
+          DoRoll(3)
+          return
+        else
+          qtRollDebug("Duplicate non-token BoP; pass: " ..
+            (itemLink2 or itemLink))
+          DoRoll(0)
+          return
+        end
+      end
+    end
+  
+    -- Stronger forge
+    if qtRollDB.needOnWeakerForge == 1 and currentForge > 0 then
+      for bag = 0, 4 do
+        for slot = 1, GetContainerNumSlots(bag) do
+          local linkBag = GetContainerItemLink(bag, slot)
+          if linkBag then
+            local idBag = tonumber(linkBag:match("item:(%d+)"))
+            if idBag then
+              local nameBag = (GetItemInfoCustom and
+                GetItemInfoCustom(idBag)) or GetItemInfo(idBag)
+              if nameBag and nameBag == itemName then
+                local forgeBag = GetForgeLevelFromLink(linkBag)
+                if forgeBag < currentForge then
+                  qtRollDebug("Need stronger forge (bag:" .. forgeBag ..
+                    ", curr:" .. currentForge .. "): " ..
+                    (itemLink2 or itemLink))
+                  DoRoll(1)
+                  return
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  
+    -- Token need
+    if qtRollDB.needOnToken == 1 and isTok and TokenIsForPlayer(itemLink)
+    then
+      qtRollDebug("Need token for player: " .. (itemLink2 or itemLink))
+      DoRoll(1)
+      return
+    end
+  
+    -- Attunement need
+    if qtRollDB.autoNeed > 0 and isAtt and not hasAttune then
         if qtRollDB.needOnNewAffixOnly == 1 then
             if HasNewAffixes(itemLink) then
-                qtRollDebug("Need attunable with new affixes: " .. (itemLink2 or itemLink))
+                qtRollDebug(
+                  "Need attunable with new affixes: "
+                  .. (itemLink2 or itemLink)
+                )
                 DoRoll(1)
                 return
-            else
-                qtRollDebug("Attunable item has no new affixes, skipping: " .. (itemLink2 or itemLink))
             end
         else
-            qtRollDebug("Need attunable (no progress): " .. (itemLink2 or itemLink))
+            qtRollDebug(
+              "Need attunable (no prog): " .. (itemLink2 or itemLink)
+            )
             DoRoll(1)
             return
         end
     end
-
+  
     -- Greed checks
-    if qtRollDB.autoGreed > 0 and isBoE_check then 
-        qtRollDebug("Greed BoE: " .. (itemLink2 or itemLink))
-        DoRoll(2)
-        return
+    if qtRollDB.autoGreed > 0 and isBoE then
+      qtRollDebug("Greed BoE: " .. (itemLink2 or itemLink))
+      DoRoll(2)
+      return
     elseif qtRollDB.greedOnLockbox > 0 and isLock then
-        qtRollDebug("Greed lockbox: " .. (itemLink2 or itemLink))
-        DoRoll(2)
-        return
-    elseif qtRollDB.greedOnResource > 0 and isRes then 
-        qtRollDebug("Greed resource: " .. (itemLink2 or itemLink))
-        DoRoll(2)
-        return
+      qtRollDebug("Greed lockbox: " .. (itemLink2 or itemLink))
+      DoRoll(2)
+      return
+    elseif qtRollDB.greedOnResource > 0 and isRes then
+      qtRollDebug("Greed resource: " .. (itemLink2 or itemLink))
+      DoRoll(2)
+      return
     end
-
-    -- Enhanced mythic disenchant logic
-    if isMythic and isBoP_check then
-        if not isAtt then
-            qtRollDebug("Disenchanting mythic BoP (not attunable): " .. (itemLink2 or itemLink))
-            DoRoll(3)
-            return
-        elseif hasAttuneProgress then
-            qtRollDebug("Disenchanting mythic BoP (already has progress): " .. (itemLink2 or itemLink))
-            DoRoll(3)
-            return
-        end
+  
+    -- Mythic BoP disenchant
+    if isMythic and isBoP then
+      if not isAtt then
+        qtRollDebug("Disenchant mythic BoP (not attunable): " ..
+          (itemLink2 or itemLink))
+        DoRoll(3)
+        return
+      elseif hasAttune then
+        qtRollDebug("Disenchant mythic BoP (has progress): " ..
+          (itemLink2 or itemLink))
+        DoRoll(3)
+        return
+      end
     end
-
-    -- Auto pass logic
-    if qtRollDB.autoPass > 0 and isBoP_check and not isAtt then
-        if itemType == "Recipe" then
-            qtRollDebug("Pass BoP (not attun) rule: SKIPPING for RECIPE " .. (itemLink2 or itemLink) .. ". Will fall to rarity/manual.")
-        else
-            qtRollDebug("Pass BoP (not attunable for player, NOT a recipe): " .. (itemLink2 or itemLink))
-            DoRoll(0)
-            return
-        end
+  
+    -- Auto‐pass BoP not attunable
+    if qtRollDB.autoPass > 0 and isBoP and not isAtt and
+      itemType ~= "Recipe" then
+      qtRollDebug("Pass BoP (not attun) – " .. (itemLink2 or itemLink))
+      DoRoll(0)
+      return
     elseif rarity and rarity < 4 then
-        qtRollDebug("Pass low rarity (rarity=" .. rarity .. "): " .. (itemLink2 or itemLink))
-        DoRoll(0)
-        return
+      qtRollDebug("Pass low rarity (rarity=" .. rarity .. "): " ..
+        (itemLink2 or itemLink))
+      DoRoll(0)
+      return
     end
-end)
+  
+    qtRollDebug("No rule matched – default IGNORE: " ..
+      (itemLink2 or itemLink))
+  end)
 
 -- Slash commands remain the same but with updated test function
 SLASH_QTROLL1 = "/qtroll"
