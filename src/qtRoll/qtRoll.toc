@@ -3,8 +3,8 @@
 ## Notes: Auto roll Need/Greed/Pass based on item type.
 ## Author: Qt
 ## Version: 3
-## RequiredDeps: SynastriaCoreLib
 ## SavedVariables: qtRollDB
 
 qtRoll.lua
 Settings.lua
+VersionCheck.lua
