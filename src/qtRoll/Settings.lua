@@ -1,185 +1,171 @@
 qtRollDB = qtRollDB or {}
-
-local panel = CreateFrame("Frame", "qtRollSettingsPanel", UIParent)
+-- create the options panel
+local panel = CreateFrame("Frame", "qtRollConfigPanel", UIParent)
 panel.name = "qtRoll"
 
+-- title
 local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
 title:SetPoint("TOPLEFT", 16, -16)
 title:SetText("|cff00bfffqt|r|cffff7d0aRoll|r Settings")
 
-local col1_x, col1_y = 16, -50
-local col2_x, col2_y = 200, -50
-local row_h, label_w = -28, 180
-local second_col_label_w = 220
+-- separator line
+local sep = panel:CreateTexture(nil, "ARTWORK")
+sep:SetTexture("Interface\\Common\\UI-Divider")
+sep:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+sep:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -16, -44)
+sep:SetHeight(2)
 
+-- option definitions
+local options = {
+    { key = "enabled",
+      text = "Enable qtRoll Addon",
+      tooltip = "Toggle the entire qtRoll addon on or off.",
+      default = 1,
+      col = 1 },
+    { key = "debugMode",
+      text = "Enable Debug Mode",
+      tooltip = "Print extra debugging info to your chat frame.",
+      default = 0,
+      col = 1 },
+    { key = "autoNeed",
+      text = "Auto Need (Attunable)",
+      tooltip = "Automatically Need attunable items\n(without any progression).",
+      default = 1,
+      col = 1 },
+    { key = "needOnNewAffixOnly",
+      text = "Need New Affixes Only",
+      tooltip =
+        "Only Need attunable items if they have\n"
+      .. "  any unlearned affixes.\n\n"
+      .. "Requires Auto Need to be enabled.",
+      default = 1,
+      col = 1,
+      depends = "autoNeed" },
+    { key = "autoGreed",
+      text = "Auto Greed (BoE)",
+      tooltip = "Automatically Greed on all BoE items.",
+      default = 1,
+      col = 1 },
+    { key = "autoPass",
+      text = "Auto Pass (BoP)",
+      tooltip = "Automatically Pass on BoP items\nthat can’t be attuned.",
+      default = 1,
+      col = 1 },
+    { key = "needOnToken",
+      text = "Auto Need (Class Tokens)",
+      tooltip = "Automatically Need class tokens\nwhen they show up.",
+      default = 1,
+      col = 1 },
+    { key = "needOnWeakerForge",
+      text = "Auto Need (Weaker Forge)",
+      tooltip = "Only Need items whose Titan-forge bonus\n"
+      .. "    is strictly higher than yours.",
+      default = 1,
+      col = 1 },
+    { key = "greedOnResource",
+      text = "Auto Greed (Resources)",
+      tooltip = "Automatically Greed on crafting resources.",
+      default = 1,
+      col = 2 },
+    { key = "greedOnLockbox",
+      text = "Auto Greed (Lockboxes)",
+      tooltip = "Automatically Greed on lockboxes.",
+      default = 1,
+      col = 2 },
+    { key = "greedOnRecipe",
+      text = "Auto Greed (Unknown Recipes)",
+      tooltip = "Automatically Greed on recipes you\nhaven’t learned yet.",
+      default = 1,
+      col = 2 },
+}
 
-local enableAddon = CreateFrame(
-    "CheckButton",
-    "qtRollEnableAddon",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-enableAddon:SetPoint("TOPLEFT", panel, "TOPLEFT", col1_x, col1_y)
-qtRollEnableAddonText:SetText("Enable qtRoll Addon")
-qtRollEnableAddonText:SetWidth(label_w)
+-- dynamically create all CheckButtons
+local buttons = {}
+local last = { [1] = nil, [2] = nil }
+local startY, rowH = -60, -28
+local colX = { [1] = 16, [2] = 280 }
+for _, opt in ipairs(options) do
+    local btn = CreateFrame(
+        "CheckButton",
+        "qtRollOpt_" .. opt.key,
+        panel,
+        "InterfaceOptionsCheckButtonTemplate"
+    )
+    -- position
+    if not last[opt.col] then
+        btn:SetPoint("TOPLEFT", panel, "TOPLEFT",
+                     colX[opt.col], startY)
+    else
+        btn:SetPoint("TOPLEFT", last[opt.col], "BOTTOMLEFT",
+                     0, rowH)
+    end
+    last[opt.col] = btn
 
-local debugMode = CreateFrame(
-    "CheckButton",
-    "qtRollDebugMode",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-debugMode:SetPoint("TOPLEFT", enableAddon, "BOTTOMLEFT", 0, row_h)
-qtRollDebugModeText:SetText("Enable Debug Mode")
-qtRollDebugModeText:SetWidth(label_w)
+    -- label
+    local txt = _G[btn:GetName() .. "Text"]
+    txt:SetText(opt.text)
+    txt:SetWidth(opt.col == 1 and 200 or 220)
 
+    -- tooltip
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(opt.text, 1, 1, 1)
+        GameTooltip:AddLine(opt.tooltip, nil, nil, nil, true)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", GameTooltip_Hide)
 
-local autoNeed = CreateFrame(
-    "CheckButton",
-    "qtRollAutoNeed",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-autoNeed:SetPoint("TOPLEFT", debugMode, "BOTTOMLEFT", 0, row_h)
-qtRollAutoNeedText:SetText("Auto Need (Attunable, No Progress)")
-qtRollAutoNeedText:SetWidth(label_w)
+    buttons[opt.key] = btn
+end
 
-local autoGreed = CreateFrame(
-    "CheckButton",
-    "qtRollAutoGreed",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-autoGreed:SetPoint("TOPLEFT", autoNeed, "BOTTOMLEFT", 0, row_h)
-qtRollAutoGreedText:SetText("Auto Greed (BoE)")
-qtRollAutoGreedText:SetWidth(label_w)
-
-local autoPass = CreateFrame(
-    "CheckButton",
-    "qtRollAutoPass",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-autoPass:SetPoint("TOPLEFT", autoGreed, "BOTTOMLEFT", 0, row_h)
-qtRollAutoPassText:SetText("Auto Pass (BoP, Not Attunable)")
-qtRollAutoPassText:SetWidth(label_w)
-
-local needOnToken = CreateFrame(
-    "CheckButton",
-    "qtRollNeedOnToken",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-needOnToken:SetPoint("TOPLEFT", autoPass, "BOTTOMLEFT", 0, row_h)
-qtRollNeedOnTokenText:SetText("Auto Need (Class Tokens)")
-qtRollNeedOnTokenText:SetWidth(label_w)
-
-local needOnWeakerForge = CreateFrame(
-    "CheckButton",
-    "qtRollNeedOnWeakerForge",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-needOnWeakerForge:SetPoint("TOPLEFT", needOnToken, "BOTTOMLEFT", 0, row_h)
-qtRollNeedOnWeakerForgeText:SetText("Auto Need (Stronger Titanforge)")
-qtRollNeedOnWeakerForgeText:SetWidth(label_w)
-
-
-local greedOnResource = CreateFrame(
-    "CheckButton",
-    "qtRollGreedOnResource",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-greedOnResource:SetPoint("TOPLEFT", panel, "TOPLEFT", col2_x, col2_y)
-qtRollGreedOnResourceText:SetText("Auto Greed (Resources)")
-qtRollGreedOnResourceText:SetWidth(second_col_label_w)
-
-
-local greedOnLockbox = CreateFrame(
-    "CheckButton",
-    "qtRollGreedOnLockbox",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-greedOnLockbox:SetPoint(
-    "TOPLEFT",
-    greedOnResource,
-    "BOTTOMLEFT",
-    0,
-    row_h
-)
-qtRollGreedOnLockboxText:SetText("Auto Greed (Lockboxes)")
-qtRollGreedOnLockboxText:SetWidth(second_col_label_w)
-
-local greedOnRecipe = CreateFrame(
-    "CheckButton",
-    "qtRollGreedOnRecipe",
-    panel,
-    "InterfaceOptionsCheckButtonTemplate"
-)
-greedOnRecipe:SetPoint(
-    "TOPLEFT",
-    greedOnLockbox,
-    "BOTTOMLEFT",
-    0,
-    row_h
-)
-qtRollGreedOnRecipeText:SetText("Auto Greed (Unknown Recipes)")
-qtRollGreedOnRecipeText:SetWidth(second_col_label_w)
-
+-- save all settings
 local function SaveSettings()
-    qtRollDB.enabled = enableAddon:GetChecked() and 1 or 0
-    qtRollDB.autoNeed = autoNeed:GetChecked() and 1 or 0
-    qtRollDB.autoGreed = autoGreed:GetChecked() and 1 or 0
-    qtRollDB.autoPass = autoPass:GetChecked() and 1 or 0
-    qtRollDB.debugMode = debugMode:GetChecked() and 1 or 0
-    qtRollDB.greedOnResource = greedOnResource:GetChecked() and 1 or 0
-    qtRollDB.greedOnLockbox = greedOnLockbox:GetChecked() and 1 or 0
-    qtRollDB.greedOnRecipe = greedOnRecipe:GetChecked() and 1 or 0
-    qtRollDB.needOnToken = needOnToken:GetChecked() and 1 or 0
-    qtRollDB.needOnWeakerForge = needOnWeakerForge:GetChecked() and 1 or 0
+  _G.qtRollDB = _G.qtRollDB or {}
+  for _, opt in ipairs(options) do
+    _G.qtRollDB[opt.key] = buttons[opt.key]:GetChecked() and 1 or 0
+  end
 end
 
-for _, btn in ipairs({
-    enableAddon,
-    autoNeed,
-    autoGreed,
-    autoPass,
-    debugMode,
-    greedOnResource,
-    greedOnLockbox,
-    greedOnRecipe,
-    needOnToken,
-    needOnWeakerForge
-}) do
-    btn:SetScript("OnClick", SaveSettings)
+-- refresh (and default-fill) all
+local function RefreshSettings()
+    _G.qtRollDB = _G.qtRollDB or {}
+    for _, opt in ipairs(options) do
+      if _G.qtRollDB[opt.key] == nil then
+        _G.qtRollDB[opt.key] = opt.default
+      end
+      buttons[opt.key]:SetChecked(_G.qtRollDB[opt.key] == 1)
+    end
+    -- disable dependent
+    local autoNeedOn = qtRollDB.autoNeed == 1
+    if autoNeedOn then
+      buttons.needOnNewAffixOnly:Enable()
+    else
+      buttons.needOnNewAffixOnly:Disable()
+    end
 end
 
-panel:SetScript("OnShow", function()
-    qtRollDB = qtRollDB or {}
-    if qtRollDB.enabled == nil then qtRollDB.enabled = 1 end
-    if qtRollDB.autoNeed == nil then qtRollDB.autoNeed = 0 end
-    if qtRollDB.autoGreed == nil then qtRollDB.autoGreed = 0 end
-    if qtRollDB.autoPass == nil then qtRollDB.autoPass = 0 end
-    if qtRollDB.debugMode == nil then qtRollDB.debugMode = 0 end
-    if qtRollDB.greedOnResource == nil then qtRollDB.greedOnResource = 0 end
-    if qtRollDB.greedOnLockbox == nil then qtRollDB.greedOnLockbox = 0 end
-    if qtRollDB.greedOnRecipe == nil then qtRollDB.greedOnRecipe = 1 end
-    if qtRollDB.needOnToken == nil then qtRollDB.needOnToken = 0 end
-    if qtRollDB.needOnWeakerForge == nil then qtRollDB.needOnWeakerForge = 0 end
-    if qtRollDB.autoNeedCustomList == nil then qtRollDB.autoNeedCustomList = {} end
+-- defaults handler
+function panel.default()
+    qtRollDB = {}
+    for _, opt in ipairs(options) do
+        qtRollDB[opt.key] = opt.default
+    end
+    RefreshSettings()
+end
 
-    enableAddon:SetChecked(qtRollDB.enabled == 1)
-    autoNeed:SetChecked(qtRollDB.autoNeed == 1)
-    autoGreed:SetChecked(qtRollDB.autoGreed == 1)
-    autoPass:SetChecked(qtRollDB.autoPass == 1)
-    debugMode:SetChecked(qtRollDB.debugMode == 1)
-    greedOnResource:SetChecked(qtRollDB.greedOnResource == 1)
-    greedOnLockbox:SetChecked(qtRollDB.greedOnLockbox == 1)
-    greedOnRecipe:SetChecked(qtRollDB.greedOnRecipe == 1)
-    needOnToken:SetChecked(qtRollDB.needOnToken == 1)
-    needOnWeakerForge:SetChecked(qtRollDB.needOnWeakerForge == 1)
-end)
+-- Blizzard will call these at the right times:
+panel.okay    = SaveSettings
+panel.refresh = RefreshSettings
 
 InterfaceOptions_AddCategory(panel)
+
+-- on ADDON_LOADED we know our saved-vars are in place,
+-- so fill any nil values with our `options[].default`.
+local init = CreateFrame("Frame")
+init:RegisterEvent("ADDON_LOADED")
+init:SetScript("OnEvent", function(self, evt, name)
+  if name == "qtRoll" then
+    RefreshSettings()
+    self:UnregisterEvent("ADDON_LOADED")
+  end
+end)
