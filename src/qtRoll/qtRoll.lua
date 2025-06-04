@@ -219,52 +219,25 @@ local TokenScanner = CreateFrame("GameTooltip",
 TokenScanner:SetOwner(UIParent, "ANCHOR_NONE")
 
 local function TokenIsForPlayer(itemLink)
-    -- Gather every string UnitClass returns (localized, English, etc.),
-    -- even if one of them is nil in the middle.
-    local classNames = {}
-    local c1, c2, c3 = UnitClass("player")
-    for _, c in ipairs({ c1, c2, c3 }) do
-      if type(c) == "string" then
-        classNames[#classNames + 1] = c
-      end
-    end
-  
-    if #classNames == 0 then
-      qtRollDebug("TokenIsForPlayer: no class names from UnitClass")
+  local localizedPlayerClassName, _ = UnitClass("player")
+  if not localizedPlayerClassName then
+      qtRollDebug("TokenIsForPlayer: Could not get localized player class name.")
       return false
-    end
-  
-    -- Lower‐case them once so we can do a case‐insensitive search
-    for i = 1, #classNames do
-      classNames[i] = classNames[i]:lower()
-    end
-  
-    -- Populate tooltip
-    TokenScanner:ClearLines()
-    TokenScanner:SetHyperlink(itemLink)
-  
-    -- Scan each line for *any* of our class names
-    for i = 2, TokenScanner:NumLines() do
-      local line = _G["qtRollTokenTooltipTextLeft"..i]
-      if not line then
-        break
-      end
-      local text = line:GetText()
-      if text then
-        local tl = text:lower()
-        for _, cls in ipairs(classNames) do
-          -- plain find is fine now since we lowered both strings
-          if tl:find(cls, 1, true) then
-            TokenScanner:Hide()
-            return true
-          end
-        end
-      end
-    end
-  
-    TokenScanner:Hide()
-    return false
   end
+  local tooltip = CreateFrame("GameTooltip", "qtRollTokenTooltip", nil, "GameTooltipTemplate")
+  tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+  tooltip:SetHyperlink(itemLink)
+  local foundClass = false
+  for i = 2, tooltip:NumLines() do
+      local text = _G["qtRollTokenTooltipTextLeft" .. i]:GetText()
+      if text and text:find(localizedPlayerClassName, 1, true) then
+          foundClass = true
+          break
+      end
+  end
+  tooltip:Hide()
+  return foundClass
+end
 
 local function GetBindingTypeFromTooltip(itemLink)
     local tooltip = CreateFrame("GameTooltip", "qtRollScanTooltip", nil, "GameTooltipTemplate")
@@ -604,6 +577,7 @@ f:SetScript("OnEvent", function(self, event, rollID)
     qtRollDebug("No rule matched – default IGNORE: " ..
       (itemLink2 or itemLink))
   end)
+
 SLASH_QTROLL1 = "/qtroll"
 SlashCmdList["QTROLL"] = function(msg)
     local args = {}
@@ -820,4 +794,4 @@ SlashCmdList["QTROLLTEST"] = function(msg)
     print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NO ACTION (Fell through all rules)");
 end
 
-qtRollDebug("qtRoll Addon loaded. v4")
+qtRollDebug("qtRoll Addon loaded. v4.0")

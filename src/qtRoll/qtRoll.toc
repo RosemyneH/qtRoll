@@ -2,9 +2,8 @@
 ## Title: |cff00bfffqt|r|cffff7d0aRoll|r
 ## Notes: Auto roll Need/Greed/Pass based on item type.
 ## Author: Qt
-## Version: 3
+## Version: 4
 ## SavedVariables: qtRollDB
 
 qtRoll.lua
 Settings.lua
-VersionCheck.lua
