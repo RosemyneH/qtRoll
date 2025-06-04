@@ -475,30 +475,55 @@ f:SetScript("OnEvent", function(self, event, rollID)
       end
     end
   
-    -- Stronger forge
-    if qtRollDB.needOnWeakerForge == 1 and currentForge > 0 then
-      for bag = 0, 4 do
-        for slot = 1, GetContainerNumSlots(bag) do
-          local linkBag = GetContainerItemLink(bag, slot)
-          if linkBag then
-            local idBag = tonumber(linkBag:match("item:(%d+)"))
-            if idBag then
-              local nameBag = (GetItemInfoCustom and
-                GetItemInfoCustom(idBag)) or GetItemInfo(idBag)
-              if nameBag and nameBag == itemName then
-                local forgeBag = GetForgeLevelFromLink(linkBag)
-                if forgeBag < currentForge then
-                  qtRollDebug("Need stronger forge (bag:" .. forgeBag ..
-                    ", curr:" .. currentForge .. "): " ..
-                    (itemLink2 or itemLink))
-                  DoRoll(1)
-                  return
+    -- Forge logic
+
+    -- 1) BoE + any forge tier (i.e. currentForge > BASE) => NEED
+    if isBoE and currentForge > FORGE_LEVEL_MAP.BASE then
+        qtRollDebug(("Forged BoE – NEED: %s")
+          :format(itemLink2 or itemLink))
+        DoRoll(1)  -- NEED
+        return
+    end
+
+    -- 2) BoP + equippable + strictly better forge than any you already own => NEED
+    if isBoP and IsUsableItem(itemLink) then
+        local worstForge  -- will hold the lowest‐tier forge you already have
+        -- scan your bags
+        for bag = 0, 4 do
+            for slot = 1, GetContainerNumSlots(bag) do
+                local linkBag = GetContainerItemLink(bag, slot)
+                if linkBag then
+                    local idBag = tonumber(linkBag:match("item:(%d+)"))
+                    if idBag == currentItemId then
+                        local forgeBag = GetForgeLevelFromLink(linkBag)
+                        if not worstForge or forgeBag < worstForge then
+                            worstForge = forgeBag
+                        end
+                    end
                 end
-              end
             end
-          end
         end
-      end
+        -- scan your equipped gear (slots 1–19)
+        for slotID = 1, 19 do
+            local linkEq = GetInventoryItemLink("player", slotID)
+            if linkEq then
+                local idEq = tonumber(linkEq:match("item:(%d+)"))
+                if idEq == currentItemId then
+                    local forgeEq = GetForgeLevelFromLink(linkEq)
+                    if not worstForge or forgeEq < worstForge then
+                        worstForge = forgeEq
+                    end
+                end
+            end
+        end
+
+        -- if we found an older forge version and this one is strictly higher:
+        if worstForge and currentForge > worstForge then
+            qtRollDebug(("Upgraded BoP – NEED (old:%d → new:%d): %s")
+              :format(worstForge, currentForge, itemLink2 or itemLink))
+            DoRoll(1)  -- NEED
+            return
+        end
     end
   
     -- Token need
