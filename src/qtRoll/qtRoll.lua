@@ -520,6 +520,9 @@ f:SetScript("OnEvent", function(self, event, rollID)
             qtRollDebug("Disenchant mythic BoP (not attunable): " ..
               (itemLink2 or itemLink))
             DoRoll(3)
+        elseif worstForge and currentForge > worstForge then
+            qtRollDebug("Roll Forge Upgrade ".. (itemLink2 or itemLink))
+            DoRoll(1)
         else
           qtRollDebug("Pass (no new affixes): "..itemLink)
           DoRoll(0)
@@ -794,4 +797,4 @@ SlashCmdList["QTROLLTEST"] = function(msg)
     print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NO ACTION (Fell through all rules)");
 end
 
-qtRollDebug("qtRoll Addon loaded. v4.0")
+qtRollDebug("qtRoll Addon loaded. v4")
