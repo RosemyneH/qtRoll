@@ -14,7 +14,6 @@ if qtRollDB == nil then
         needOnNewAffixOnly = 0,
         autoNeedCustomList = {},
         defaultNeedRoll = {
-            43102,
             47242
         }
     }
@@ -25,7 +24,6 @@ else
 
     if type(qtRollDB.defaultNeedRoll) ~= "table" or #qtRollDB.defaultNeedRoll == 0 then
         qtRollDB.defaultNeedRoll = {
-            43102,
             47242
         }
     end
@@ -70,6 +68,107 @@ local function qtRollDebug(msg)
             "|cff00bfffqt|r|cffff7d0aRoll|r Debug: " .. msg
         )
     end
+end
+
+local function GetForgeLevelFromLink(itemLink)
+    if not itemLink then return FORGE_LEVEL_MAP.BASE end
+    
+    if GetItemLinkTitanforge then
+        local forgeValue = GetItemLinkTitanforge(itemLink)
+        -- Validate the returned value against known FORGE_LEVEL_MAP values
+        for _, knownValue in pairs(FORGE_LEVEL_MAP) do
+            if forgeValue == knownValue then
+                return forgeValue
+            end
+        end
+        qtRollDebug("GetForgeLevelFromLink: GetItemLinkTitanforge returned unexpected value: " .. tostring(forgeValue))
+    else
+        qtRollDebug("GetForgeLevelFromLink: GetItemLinkTitanforge API not available.")
+    end
+    return FORGE_LEVEL_MAP.BASE
+end
+
+-- Enhanced forge level checking function
+local function ShouldNeedForForgeUpgrade(itemLink, itemId)
+    if not itemLink or not itemId then return false end
+    
+    local currentForgeLevel = GetForgeLevelFromLink(itemLink)
+    qtRollDebug("ShouldNeedForForgeUpgrade: Checking itemId " .. itemId .. " with forge level " .. currentForgeLevel)
+    
+    -- Check if we have any attuned variant at this forge level or higher
+    if HasAttunedAnyVariantEx then
+        -- First check if we already have this exact forge level or higher
+        for forgeLevel = currentForgeLevel, FORGE_LEVEL_MAP.LIGHTFORGED do
+            if HasAttunedAnyVariantEx(itemId, forgeLevel) then
+                qtRollDebug("  Already have attuned variant at forge level " .. forgeLevel .. " (>= " .. currentForgeLevel .. ")")
+                return false
+            end
+        end
+        
+        -- Now check if we have any lower forge level variants (which would make this an upgrade)
+        for forgeLevel = currentForgeLevel - 1, FORGE_LEVEL_MAP.BASE, -1 do
+            if HasAttunedAnyVariantEx(itemId, forgeLevel) then
+                qtRollDebug("  Found attuned variant at lower forge level " .. forgeLevel .. " - this is an upgrade (" .. forgeLevel .. " → " .. currentForgeLevel .. ")")
+                return true
+            end
+        end
+        
+        -- No attuned variants found, check if the item is attunable at all
+        if CanAttuneItemHelper and CanAttuneItemHelper(itemId) > 0 then
+            qtRollDebug("  No attuned variants found, but item is attunable - should need")
+            return true
+        end
+    else
+        qtRollDebug("  HasAttunedAnyVariantEx API not available, falling back to bag/equipped scan")
+        -- Fallback to the existing bag/equipped scan logic
+        local bestForge = nil
+        local hasAnyVariant = false
+        
+        -- Scan bags
+        for bag = 0, 4 do
+            for slot = 1, GetContainerNumSlots(bag) do
+                local linkBag = GetContainerItemLink(bag, slot)
+                if linkBag then
+                    local idBag = tonumber(linkBag:match("item:(%d+)"))
+                    if idBag == itemId then
+                        hasAnyVariant = true
+                        local forgeBag = GetForgeLevelFromLink(linkBag)
+                        if not bestForge or forgeBag > bestForge then
+                            bestForge = forgeBag
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- Scan equipped gear
+        for slotID = 1, 19 do
+            local linkEq = GetInventoryItemLink("player", slotID)
+            if linkEq then
+                local idEq = tonumber(linkEq:match("item:(%d+)"))
+                if idEq == itemId then
+                    hasAnyVariant = true
+                    local forgeEq = GetForgeLevelFromLink(linkEq)
+                    if not bestForge or forgeEq > bestForge then
+                        bestForge = forgeEq
+                    end
+                end
+            end
+        end
+        
+        if hasAnyVariant and bestForge then
+            if currentForgeLevel > bestForge then
+                qtRollDebug("  Fallback: Found forge upgrade (" .. bestForge .. " → " .. currentForgeLevel .. ")")
+                return true
+            else
+                qtRollDebug("  Fallback: Already have forge level " .. bestForge .. " (>= " .. currentForgeLevel .. ")")
+                return false
+            end
+        end
+    end
+    
+    qtRollDebug("  No forge upgrade needed")
+    return false
 end
 
 -- Standalone functions to replace SynastriaCoreLib dependency
@@ -137,34 +236,82 @@ local function IsMythicItem(itemLink)
     return false
 end
 
-local function GetForgeLevelFromLink(itemLink)
-    if not itemLink then return FORGE_LEVEL_MAP.BASE end
-    
-    if GetItemLinkTitanforge then
-        local forgeValue = GetItemLinkTitanforge(itemLink)
-        -- Validate the returned value against known FORGE_LEVEL_MAP values
-        for _, knownValue in pairs(FORGE_LEVEL_MAP) do
-            if forgeValue == knownValue then
-                return forgeValue
-            end
-        end
-        qtRollDebug("GetForgeLevelFromLink: GetItemLinkTitanforge returned unexpected value: " .. tostring(forgeValue))
-    else
-        qtRollDebug("GetForgeLevelFromLink: GetItemLinkTitanforge API not available.")
-    end
-    return FORGE_LEVEL_MAP.BASE
-end
-
-local function HasNewAffixes(itemLink)
+-- Replace the current HasNewAffixes function with this improved version
+local function ItemQualifiesForAttuneNeed(itemLink, needOnNewAffixOnly)
     if not itemLink then return false end
     
     local itemId = tonumber(itemLink:match("item:(%d+)"))
     if not itemId then return false end
     
-    return HasAttunedAnyVariantOfItem(itemID)
+    -- Check if player can attune this item
+    local canPlayerAttuneThisItem = false
+    if CanAttuneItemHelper then
+        canPlayerAttuneThisItem = (CanAttuneItemHelper(itemId) == 1)
+    else
+        qtRollDebug("ItemQualifiesForAttuneNeed: CanAttuneItemHelper API not found for itemId " .. itemId)
+        return false
+    end
+    
+    if not canPlayerAttuneThisItem then
+        return false
+    end
+    
+    -- Check progress of THIS SPECIFIC VARIANT
+    local progress = 0
+    if GetItemLinkAttuneProgress then
+        progress = GetItemLinkAttuneProgress(itemLink) or 0
+        if type(progress) ~= "number" then
+            qtRollDebug("ItemQualifiesForAttuneNeed: GetItemLinkAttuneProgress did not return a number for itemLink " .. itemLink .. ". Got: " .. tostring(progress))
+            progress = 100  -- Assume fully attuned if we can't get progress
+        end
+    else
+        qtRollDebug("ItemQualifiesForAttuneNeed: GetItemLinkAttuneProgress API not found for itemLink " .. itemLink)
+        return false
+    end
+    
+    qtRollDebug("ItemQualifiesForAttuneNeed check for itemLink " .. itemLink .. ": Progress=" .. progress .. ", NeedOnNewAffixOnly=" .. tostring(needOnNewAffixOnly))
+    
+    -- If this specific variant is already 100% attuned, don't need it
+    if progress >= 100 then
+        qtRollDebug("  This specific variant already 100% attuned. Does not qualify.")
+        return false
+    end
+    
+    -- Get forge level of this specific variant
+    local currentForgeLevel = GetForgeLevelFromLink(itemLink)
+    
+    if needOnNewAffixOnly then
+        -- Strict mode: only need if no variant has been attuned OR this is a higher forge level
+        local hasAnyVariantBeenAttuned = true
+        if HasAttunedAnyVariantOfItem then
+            hasAnyVariantBeenAttuned = HasAttunedAnyVariantOfItem(itemId)
+        else
+            qtRollDebug("ItemQualifiesForAttuneNeed: HasAttunedAnyVariantOfItem API not found for itemId " .. itemId)
+            return false  -- Can't determine, so don't need
+        end
+        
+        if not hasAnyVariantBeenAttuned then
+            qtRollDebug("  Strict Mode: Qualifies because NO variant of base item ID " .. itemId .. " has been attuned yet.")
+            return true
+        else
+            -- FORGE PRIORITY OVERRIDE: Even in strict mode, allow higher forge levels
+            if currentForgeLevel > FORGE_LEVEL_MAP.BASE then
+                qtRollDebug("  Strict Mode: FORGE OVERRIDE - Qualifies because this is a higher forge level (" .. currentForgeLevel .. ") even though some variant has been attuned.")
+                return true
+            else
+                qtRollDebug("  Strict Mode: Does NOT qualify because some variant of base item ID " .. itemId .. " has already been attuned and this is only forge level " .. currentForgeLevel .. ".")
+                return false
+            end
+        end
+    else
+        -- Lenient mode: need if this specific variant has progress < 100%
+        qtRollDebug("  Lenient Mode: Qualifies because this specific variant progress < 100%.")
+        return true
+    end
 end
 
 local function ItemExistsInBags(itemId, itemName)
+    -- Check bags first
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
             local link_in_bag = GetContainerItemLink(bag, slot)
@@ -183,6 +330,27 @@ local function ItemExistsInBags(itemId, itemName)
             end
         end
     end
+    
+    -- Check equipped gear (slots 1-19)
+    for slotID = 1, 19 do
+        local link_equipped = GetInventoryItemLink("player", slotID)
+        if link_equipped then
+            local itemId_equipped = tonumber(link_equipped:match("item:(%d+)"))
+            if itemId_equipped then
+                if itemId and itemId_equipped == itemId then
+                    qtRollDebug("Found duplicate item equipped in slot " .. slotID)
+                    return true, link_equipped
+                elseif not itemId and itemName then
+                    local nameE_custom = GetItemInfoCustom and GetItemInfoCustom(itemId_equipped) or GetItemInfo(itemId_equipped)
+                    if nameE_custom and nameE_custom == itemName then
+                        qtRollDebug("Found duplicate item (by name) equipped in slot " .. slotID)
+                        return true, link_equipped
+                    end
+                end
+            end
+        end
+    end
+    
     return false, nil
 end
 
@@ -261,7 +429,29 @@ end
 local RESOURCE_TYPES = {
     ["Trade Goods"] = true,
     ["Consumable"] = true,
-    ["Gem"] = true
+    ["Gem"] = true,
+    ["Reagent"] = true,
+    ["Material"] = true,
+    ["Other"] = true,
+    ["Metal & Stone"] = true,
+    ["Herb"] = true,
+    ["Elemental"] = true,
+    ["Cloth"] = true,
+    ["Leather"] = true,
+    ["Cooking"] = true,
+    ["Enchanting"] = true,
+    ["Jewelcrafting"] = true,
+    ["Parts"] = true,
+    ["Explosives"] = true,
+    ["Devices"] = true
+}
+
+-- Specific item IDs that should be treated as trade goods/resources
+local TRADE_GOODS_ITEMS = {
+    [43102] = true,
+    [47556] = true,
+    [12811] = true,
+    [45087] = true,
 }
 
 local function IsLockbox(itemLink)
@@ -404,7 +594,7 @@ f:SetScript("OnEvent", function(self, event, rollID)
   
     local isAtt = IsAttunable(itemLink)
     local hasAttune = HasAttuneProgress(itemLink)
-    local isRes = RESOURCE_TYPES[itemType]
+    local isRes = RESOURCE_TYPES[itemType] or RESOURCE_TYPES[itemSubType] or TRADE_GOODS_ITEMS[currentItemId]
     local isLock = IsLockbox(itemLink)
     local isMythic = IsMythicItem(itemLink)
     local currentForge = GetForgeLevelFromLink(itemLink)
@@ -448,52 +638,18 @@ f:SetScript("OnEvent", function(self, event, rollID)
       end
     end
   
-    -- Forge logic
-
     -- 1) BoE + any forge tier (i.e. currentForge > BASE) => NEED
     if isBoE and currentForge > FORGE_LEVEL_MAP.BASE then
-        qtRollDebug(("Forged BoE – NEED: %s")
-          :format(itemLink2 or itemLink))
+        qtRollDebug("Forged BoE – NEED: " .. (itemLink2 or itemLink))
         DoRoll(1)  -- NEED
         return
     end
 
-    -- 2) BoP + equippable + strictly better forge than any you already own => NEED
-    if isBoP and IsUsableItem(itemLink) then
-        local worstForge  -- will hold the lowest‐tier forge you already have
-        -- scan your bags
-        for bag = 0, 4 do
-            for slot = 1, GetContainerNumSlots(bag) do
-                local linkBag = GetContainerItemLink(bag, slot)
-                if linkBag then
-                    local idBag = tonumber(linkBag:match("item:(%d+)"))
-                    if idBag == currentItemId then
-                        local forgeBag = GetForgeLevelFromLink(linkBag)
-                        if not worstForge or forgeBag < worstForge then
-                            worstForge = forgeBag
-                        end
-                    end
-                end
-            end
-        end
-        -- scan your equipped gear (slots 1–19)
-        for slotID = 1, 19 do
-            local linkEq = GetInventoryItemLink("player", slotID)
-            if linkEq then
-                local idEq = tonumber(linkEq:match("item:(%d+)"))
-                if idEq == currentItemId then
-                    local forgeEq = GetForgeLevelFromLink(linkEq)
-                    if not worstForge or forgeEq < worstForge then
-                        worstForge = forgeEq
-                    end
-                end
-            end
-        end
-
-        -- if we found an older forge version and this one is strictly higher:
-        if worstForge and currentForge > worstForge then
-            qtRollDebug(("Upgraded BoP – NEED (old:%d → new:%d): %s")
-              :format(worstForge, currentForge, itemLink2 or itemLink))
+    -- Check for forge upgrades (both BoE and BoP)
+    if IsUsableItem(itemLink) then
+        local shouldNeedForForge = ShouldNeedForForgeUpgrade(itemLink, currentItemId)
+        if shouldNeedForForge then
+            qtRollDebug("Forge upgrade needed – NEED: " .. (itemLink2 or itemLink))
             DoRoll(1)  -- NEED
             return
         end
@@ -508,30 +664,15 @@ f:SetScript("OnEvent", function(self, event, rollID)
     end
   
     -- Attunement need
-    if qtRollDB.autoNeed > 0 and isAtt and not hasAttune then
-      if qtRollDB.needOnNewAffixOnly == 1 then
-        if HasNewAffixes(itemLink) then
-          qtRollDebug("Need attunable with NEW affixes: "..itemLink)
-          DoRoll(1)
-        elseif not(HasNewAffixes(itemLink)) and isBoE then
-          qtRollDebug("Greed BoE: " .. (itemLink2 or itemLink))
-          DoRoll(2)
-        elseif isMythic and isBoP then
-            qtRollDebug("Disenchant mythic BoP (not attunable): " ..
-              (itemLink2 or itemLink))
-            DoRoll(3)
-        elseif worstForge and currentForge > worstForge then
-            qtRollDebug("Roll Forge Upgrade ".. (itemLink2 or itemLink))
+    if qtRollDB.autoNeed > 0 and isAtt then
+        local shouldNeedForAttune = ItemQualifiesForAttuneNeed(itemLink, qtRollDB.needOnNewAffixOnly == 1)
+        if shouldNeedForAttune then
+            qtRollDebug("Need attunable item: " .. (itemLink2 or itemLink))
             DoRoll(1)
+            return
         else
-          qtRollDebug("Pass (no new affixes): "..itemLink)
-          DoRoll(0)
+            qtRollDebug("Attunable item does not qualify for need: " .. (itemLink2 or itemLink))
         end
-      else
-        qtRollDebug("Need attunable (no progress): "..itemLink)
-        DoRoll(1)
-      end
-      return
     end
   
     -- Greed checks
@@ -672,6 +813,7 @@ SlashCmdList["QTROLL"] = function(msg)
 end
 
 -- Updated test command with new features
+-- Updated test command with new features
 SLASH_QTROLLTEST1 = "/qtrolltest"
 SlashCmdList["QTROLLTEST"] = function(msg)
     if not qtRollDB or qtRollDB.enabled == 0 then
@@ -689,7 +831,18 @@ SlashCmdList["QTROLLTEST"] = function(msg)
     local actualItemId = ResolveItemToID(link_input)
     
     if actualItemId then
-        name, actualLinkToTest, rarity, _, _, itype, isub = GetItemInfoCustom and GetItemInfoCustom(actualItemId) or GetItemInfo(actualItemId)
+        -- If input was already a full item link, preserve it to keep forge information
+        if link_input:match("|H") then
+            actualLinkToTest = link_input
+            qtRollDebug("Using original item link: " .. actualLinkToTest)
+        else
+            -- Only create basic link if input was just an ID or name
+            name, actualLinkToTest, rarity, _, _, itype, isub = GetItemInfoCustom and GetItemInfoCustom(actualItemId) or GetItemInfo(actualItemId)
+            if not actualLinkToTest then actualLinkToTest = "item:"..actualItemId end
+        end
+        
+        -- Get item info for basic properties (but keep the original link for forge info)
+        name, _, rarity, _, _, itype, isub = GetItemInfoCustom and GetItemInfoCustom(actualItemId) or GetItemInfo(actualItemId)
         if not name then
             print("|cff00bfffqt|r|cffff7d0aRoll|r Test: No info for item ID '" .. actualItemId .. "'")
             return
@@ -698,10 +851,8 @@ SlashCmdList["QTROLLTEST"] = function(msg)
         print("|cff00bfffqt|r|cffff7d0aRoll|r Test: Failed to resolve item: " .. link_input)
         return
     end
-    
-    if not actualLinkToTest then actualLinkToTest = "item:"..actualItemId end
 
-    -- Test all the logic
+    -- Test all the logic following the same order as main function
     if rarity == 5 then
         print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NO ACTION (Legendary Item)"); 
         return
@@ -733,14 +884,28 @@ SlashCmdList["QTROLLTEST"] = function(msg)
     end
 
     local isAtt_test = IsAttunable(actualLinkToTest)
-    local hasAttuneProg_test = HasAttuneProgress(actualLinkToTest)
     local isBoE_test, isBoP_test = GetBindingTypeFromTooltip(actualLinkToTest)
-    local isRes_test = RESOURCE_TYPES[itype]
+    local isRes_test = RESOURCE_TYPES[itype] or RESOURCE_TYPES[isub] or TRADE_GOODS_ITEMS[actualItemId]
     local isLock_test = IsLockbox(actualLinkToTest)
     local isMythic_test = IsMythicItem(actualLinkToTest)
     local currentForgeLevel_test = GetForgeLevelFromLink(actualLinkToTest)
     local isTok_test_val = IsToken(actualLinkToTest)
     local isTokP_test = isTok_test_val and TokenIsForPlayer(actualLinkToTest)
+
+    -- Test attunement progress for fully attuned check
+    local attuneProg = 0
+    if GetItemLinkAttuneProgress then
+        attuneProg = GetItemLinkAttuneProgress(actualLinkToTest) or 0
+    end
+
+    -- Fully attuned check (Updated: BoE & fully attuned => GREED, else PASS)
+    if isAtt_test and attuneProg >= 100 then
+        if isBoE_test and qtRollDB.autoGreed > 0 then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => GREED (Fully attuned BoE)"); return
+        else
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Fully attuned)"); return
+        end
+    end
 
     -- Test duplicate check
     local foundDupe, dupeLink = ItemExistsInBags(actualItemId, name)
@@ -752,19 +917,32 @@ SlashCmdList["QTROLLTEST"] = function(msg)
         end
     end
 
+    -- 1) BoE + any forge tier => NEED
+    if isBoE_test and currentForgeLevel_test > FORGE_LEVEL_MAP.BASE then
+        print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Forged BoE)"); return
+    end
+
+    -- 2) Check for forge upgrades using enhanced logic
+    if IsUsableItem(actualLinkToTest) then
+        local shouldNeedForForge = ShouldNeedForForgeUpgrade(actualLinkToTest, actualItemId)
+        if shouldNeedForForge then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Forge Upgrade)"); return
+        end
+    end
+
     if qtRollDB.needOnToken == 1 and isTokP_test then
         print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Token)"); return
     end
 
-    if qtRollDB.autoNeed > 0 and isAtt_test and not hasAttuneProg_test then
-        if qtRollDB.needOnNewAffixOnly == 1 then
-            if HasNewAffixes(actualLinkToTest) then
-                print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Attun, new affixes)"); return
-            else
-                print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => SKIP (Attun, no new affixes)");
-            end
+    -- Updated attunement need test using the new logic
+    if qtRollDB.autoNeed > 0 and isAtt_test then
+        local shouldNeedForAttune = ItemQualifiesForAttuneNeed(actualLinkToTest, qtRollDB.needOnNewAffixOnly == 1)
+        if shouldNeedForAttune then
+            local modeText = qtRollDB.needOnNewAffixOnly == 1 and "Strict Mode" or "Lenient Mode"
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Attunable - " .. modeText .. ")"); return
         else
-            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Attun, no prog)"); return
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => Attunable but does not qualify for need, continuing to other checks...")
+            -- Continue to greed checks
         end
     end
 
@@ -781,8 +959,10 @@ SlashCmdList["QTROLLTEST"] = function(msg)
     end
     
     if isMythic_test and isBoP_test then
-        if not isAtt_test or hasAttuneProg_test then
-            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Mythic BoP, not useful)"); return
+        if not isAtt_test then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Mythic BoP, not attunable)"); return
+        elseif attuneProg > 0 then
+            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Mythic BoP, has progress)"); return
         end
     end
 
@@ -797,4 +977,4 @@ SlashCmdList["QTROLLTEST"] = function(msg)
     print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NO ACTION (Fell through all rules)");
 end
 
-qtRollDebug("qtRoll Addon loaded. v4")
+qtRollDebug("qtRoll Addon loaded. v4.5")
