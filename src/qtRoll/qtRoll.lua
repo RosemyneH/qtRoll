@@ -619,21 +619,51 @@ f:SetScript("OnEvent", function(self, event, rollID)
       end
     end
   
-    -- Enhanced BoP duplicate check
+    -- Enhanced BoP duplicate check - but skip for items that should be needed/greeded
     if isBoP and not isTok then
-      local foundDupe, dupeLink = ItemExistsInBags(currentItemId,
-        itemName)
-      if foundDupe then
-        if isMythic then
-          qtRollDebug("Duplicate mythic BoP; disenchant: " ..
-            (itemLink2 or itemLink))
-          DoRoll(3)
-          return
-        else
-          qtRollDebug("Duplicate non-token BoP; pass: " ..
-            (itemLink2 or itemLink))
-          DoRoll(0)
-          return
+      -- Don't apply duplicate check to items in custom need list
+      local isInCustomNeedList = false
+      if currentItemId and qtRollDB.autoNeedCustomList then
+        for _, id in ipairs(qtRollDB.autoNeedCustomList) do
+          if id == currentItemId then
+            isInCustomNeedList = true
+            break
+          end
+        end
+      end
+      
+      -- Don't apply duplicate check to items in default need list
+      local isInDefaultNeedList = false
+      if currentItemId and qtRollDB.defaultNeedRoll then
+        for _, id in ipairs(qtRollDB.defaultNeedRoll) do
+          if id == currentItemId then
+            isInDefaultNeedList = true
+            break
+          end
+        end
+      end
+      
+      -- Don't apply duplicate check to trade goods items
+      local isTradeGood = RESOURCE_TYPES[itemType] or RESOURCE_TYPES[itemSubType] or TRADE_GOODS_ITEMS[currentItemId]
+      
+      -- Don't apply duplicate check to attunable items (let attunement logic handle them)
+      local isAttunable = IsAttunable(itemLink)
+      
+      -- Don't apply duplicate check to class tokens (even if IsToken didn't catch them)
+      local isForPlayer = TokenIsForPlayer(itemLink)
+      
+      if not isInCustomNeedList and not isInDefaultNeedList and not isTradeGood and not isAttunable and not isForPlayer then
+        local foundDupe, dupeLink = ItemExistsInBags(currentItemId, itemName)
+        if foundDupe then
+          if isMythic then
+            qtRollDebug("Duplicate mythic BoP; disenchant: " .. (itemLink2 or itemLink))
+            DoRoll(3)
+            return
+          else
+            qtRollDebug("Duplicate non-essential BoP; pass: " .. (itemLink2 or itemLink))
+            DoRoll(0)
+            return
+          end
         end
       end
     end
@@ -655,8 +685,8 @@ f:SetScript("OnEvent", function(self, event, rollID)
         end
     end
   
-    -- Token need
-    if qtRollDB.needOnToken == 1 and isTok and TokenIsForPlayer(itemLink)
+    -- Token need (check both IsToken result and TokenIsForPlayer for broader coverage)
+    if qtRollDB.needOnToken == 1 and (isTok or TokenIsForPlayer(itemLink))
     then
       qtRollDebug("Need token for player: " .. (itemLink2 or itemLink))
       DoRoll(1)
@@ -907,13 +937,48 @@ SlashCmdList["QTROLLTEST"] = function(msg)
         end
     end
 
-    -- Test duplicate check
-    local foundDupe, dupeLink = ItemExistsInBags(actualItemId, name)
-    if isBoP_test and not isTok_test_val and foundDupe then
-        if isMythic_test then
-            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Duplicate Mythic BoP)"); return
-        else
-            print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Duplicate BoP)"); return
+    -- Test duplicate check - but skip for items that should be needed/greeded
+    if isBoP_test and not isTok_test_val then
+        -- Don't apply duplicate check to items in custom need list
+        local isInCustomNeedList = false
+        if actualItemId and qtRollDB.autoNeedCustomList then
+            for _, id in ipairs(qtRollDB.autoNeedCustomList) do
+                if id == actualItemId then
+                    isInCustomNeedList = true
+                    break
+                end
+            end
+        end
+        
+        -- Don't apply duplicate check to items in default need list
+        local isInDefaultNeedList = false
+        if actualItemId and qtRollDB.defaultNeedRoll then
+            for _, id in ipairs(qtRollDB.defaultNeedRoll) do
+                if id == actualItemId then
+                    isInDefaultNeedList = true
+                    break
+                end
+            end
+        end
+        
+        -- Don't apply duplicate check to trade goods items
+        local isTradeGood = RESOURCE_TYPES[itype] or RESOURCE_TYPES[isub] or TRADE_GOODS_ITEMS[actualItemId]
+        
+        -- Don't apply duplicate check to attunable items
+        local isAttunable = IsAttunable(actualLinkToTest)
+        
+        -- Don't apply duplicate check to class tokens (even if IsToken didn't catch them)
+        local isForPlayer = TokenIsForPlayer(actualLinkToTest)
+        
+        if not isInCustomNeedList and not isInDefaultNeedList and not isTradeGood and not isAttunable and not isForPlayer then
+            local foundDupe, dupeLink = ItemExistsInBags(actualItemId, name)
+            if foundDupe then
+                if isMythic_test then
+                    print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => DISENCHANT (Duplicate Mythic BoP)"); return
+                else
+                    print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => PASS (Duplicate Non-essential BoP)"); return
+                end
+            end
         end
     end
 
@@ -930,7 +995,7 @@ SlashCmdList["QTROLLTEST"] = function(msg)
         end
     end
 
-    if qtRollDB.needOnToken == 1 and isTokP_test then
+    if qtRollDB.needOnToken == 1 and (isTok_test_val or TokenIsForPlayer(actualLinkToTest)) then
         print("|cff00bfffqt|r|cffff7d0aRoll|r Test: " .. actualLinkToTest .. " => NEED (Token)"); return
     end
 
